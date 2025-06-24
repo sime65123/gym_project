@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            color: #333;
+            font-size: 14px;
+            background-color: #fff;
+            padding: 20px;
+        }
+
+        .container {
+            border: 1px solid #ccc;
+            padding: 20px;
+        }
+
+        .header {
+            border-bottom: 1px solid #ccc;
+            margin-bottom: 20px;
+        }
+
+        .logo {
+            font-size: 22px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+
+        .logo span {
+            color: #e74c3c;
+        }
+
+        .facture-id {
+            text-align: right;
+            font-size: 13px;
+        }
+
+        .facture-id .code {
+            background-color: #eee;
+            padding: 4px 8px;
+            font-family: monospace;
+        }
+
+        .section-title {
+            background-color: #f0f0f0;
+            padding: 6px;
+            font-weight: bold;
+            margin-top: 25px;
+            margin-bottom: 10px;
+        }
+
+        table {
+            width: 100%;
+            margin-bottom: 15px;
+            border-collapse: collapse;
+        }
+
+        td.label {
+            width: 30%;
+            font-weight: bold;
+            padding: 6px;
+            vertical-align: top;
+        }
+
+        td.valeur {
+            padding: 6px;
+        }
+
+        .type-box {
+            display: inline-block;
+            padding: 4px 10px;
+            font-weight: bold;
+            color: #fff;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+
+        .abonnement {
+            background-color: #2ecc71;
+        }
+
+        .seance {
+            background-color: #e67e22;
+        }
+
+        .montant {
+            font-size: 16px;
+            font-weight: bold;
+            color: #e74c3c;
+        }
+
+        .footer {
+            text-align: center;
+            font-size: 12px;
+            color: #777;
+            border-top: 1px solid #ccc;
+            margin-top: 30px;
+            padding-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">GYM<span>ZONE</span></div>
+            <div class="facture-id">
+                Facture N° <span class="code">{{ uuid }}</span>
+            </div>
+        </div>
+
+        <div class="section-title">Informations Client</div>
+        <table>
+            <tr>
+                <td class="label">Nom complet :</td>
+                <td class="valeur">{{ paiement.client.nom }} {{ paiement.client.prenom }}</td>
+            </tr>
+            <tr>
+                <td class="label">Date de paiement :</td>
+                <td class="valeur">{{ paiement.date_paiement }}</td>
+            </tr>
+            <tr>
+                <td class="label">Mode de paiement :</td>
+                <td class="valeur">{{ paiement.mode_paiement }}</td>
+            </tr>
+        </table>
+
+        <div class="section-title">Détails</div>
+        <table>
+            <tr>
+                <td class="label">Type :</td>
+                <td class="valeur">
+                    <span class="type-box {% if paiement.abonnement %}abonnement{% else %}seance{% endif %}">
+                        {% if paiement.abonnement %}Abonnement{% else %}Séance{% endif %}
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td class="label">Montant :</td>
+                <td class="valeur montant">{{ paiement.montant }} FCFA</td>
+            </tr>
+        </table>
+
+        <div class="footer">
+            Merci pour votre confiance !<br />
+            GYM ZONE • contact@gymzone.com • +237 XX XX XX XX
+        </div>
+    </div>
+</body>
+</html>

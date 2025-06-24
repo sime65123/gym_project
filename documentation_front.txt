@@ -1,0 +1,220 @@
+# Documentation API - GYM ZONE (Backend)
+
+## Authentification (JWT)
+- POST   /api/token/                → Obtenir un token (login)
+    - Body: { "email": "...", "password": "..." }
+- POST   /api/token/refresh/        → Rafraîchir le token
+    - Body: { "refresh": "<refresh_token>" }
+- GET    /api/me/                   → Infos du profil connecté (header Authorization: Bearer <token>)
+
+---
+
+## Utilisateurs
+- POST   /api/register/             → Inscription client
+    - Body: { "email", "nom", "prenom", "password" }
+- GET    /api/users/                → Liste des utilisateurs (admin uniquement)
+- GET    /api/users/<id>/           → Détail utilisateur (admin uniquement)
+- PATCH  /api/users/<id>/           → Modifier utilisateur (admin uniquement)
+- DELETE /api/users/<id>/           → Supprimer utilisateur (admin uniquement)
+
+Champs User :
+- id, email, nom, prenom, telephone, role (ADMIN/EMPLOYE/CLIENT), solde
+
+---
+
+## Abonnements
+- GET    /api/abonnements/          → Liste des abonnements
+- POST   /api/abonnements/          → Créer (admin uniquement)
+- GET    /api/abonnements/<id>/     → Détail
+- PATCH  /api/abonnements/<id>/     → Modifier (admin uniquement)
+- DELETE /api/abonnements/<id>/     → Supprimer (admin uniquement)
+
+Champs Abonnement :
+- id, nom, description, prix, duree_jours, actif
+
+---
+
+## Séances
+- GET    /api/seances/              → Liste des séances
+- POST   /api/seances/              → Créer (admin/employé uniquement)
+- GET    /api/seances/<id>/         → Détail
+- PATCH  /api/seances/<id>/         → Modifier (admin/employé uniquement)
+- DELETE /api/seances/<id>/         → Supprimer (admin/employé uniquement)
+
+Champs Séance :
+- id, titre, description, date_heure, coach (nom complet), capacite
+
+---
+
+## Réservations
+- GET    /api/reservations/         → Liste des réservations (client = ses réservations)
+- POST   /api/reservations/         → Réserver une séance (client uniquement)
+    - Body: { "seance": <id> }
+- GET    /api/reservations/<id>/    → Détail
+- PATCH  /api/reservations/<id>/    → Modifier statut (admin/employé)
+- DELETE /api/reservations/<id>/    → Annuler (client ou admin/employé)
+
+Champs Reservation :
+- id, client (nom), seance (titre), date_reservation, statut (CONFIRMEE/ANNULEE)
+
+---
+
+## Paiements
+- GET    /api/paiements/            → Liste des paiements (client = ses paiements)
+- POST   /api/init-paiement/        → Initier paiement abonnement/séance (client)
+    - Body: { "montant", "abonnement" ou "seance", "use_balance" (optionnel, bool) }
+    - Réponse: { paiement_id, transaction_id, status, mode_paiement, cinetpay_response }
+- POST   /api/recharge-compte/      → Recharger le solde via CinetPay (client)
+    - Body: { "montant" }
+    - Réponse: { paiement_id, transaction_id, cinetpay_response }
+- POST   /api/cinetpay/webhook/     → Webhook CinetPay (interne)
+    - Body: { "cpm_trans_id": "<transaction_id>" }
+
+Champs Paiement :
+- id, client (nom), abonnement (nom), seance (titre), montant, date_paiement, status (EN_ATTENTE/PAYE/ECHEC), transaction_id, mode_paiement (CINETPAY/ESPECE/SOLDE)
+
+---
+
+## Factures
+- GET    /api/factures/             → Liste des factures (client = ses factures)
+- GET    /api/factures/<id>/        → Détail facture (lien PDF)
+
+Champs Facture :
+- id, uuid, date_generation, paiement (voir ci-dessus), fichier_pdf_url
+
+---
+
+## Charges (dépenses)
+- GET    /api/charges/              → Liste des charges (admin uniquement)
+- POST   /api/charges/              → Créer (admin uniquement)
+- GET    /api/charges/<id>/         → Détail
+- PATCH  /api/charges/<id>/         → Modifier (admin uniquement)
+- DELETE /api/charges/<id>/         → Supprimer (admin uniquement)
+
+Champs Charge :
+- id, titre, montant, date, description
+
+---
+
+## Présence du personnel
+- GET    /api/presences/            → Liste des présences (admin/employé)
+- POST   /api/presences/            → Marquer présence (employé)
+    - Body: { "date", "present", "commentaire" }
+- GET    /api/presences/<id>/       → Détail
+- PATCH  /api/presences/<id>/       → Modifier (admin/employé)
+- DELETE /api/presences/<id>/       → Supprimer (admin)
+
+Champs PresencePersonnel :
+- id, employe (nom), date, present (bool), commentaire
+
+---
+
+## Rapports financiers
+- GET    /api/financial-report/     → Rapport financier global (admin uniquement)
+    - Résumé : total_revenue, total_expenses, profit, active_clients
+    - Statistiques mensuelles, par abonnement, par séance
+
+---
+
+## Règles d'accès (permissions)
+- ADMIN : accès total à tout
+- EMPLOYE : gestion séances, réservations, présences
+- CLIENT : accès à ses réservations, paiements, factures, recharges
+
+---
+
+## Notes pour le frontend
+
+- **Authentification** : Utiliser JWT (Bearer token dans le header Authorization).
+- **Pagination** : Les listes sont paginées (clé "results" dans la réponse).
+- **Champs à remplir** :
+    - Abonnement : nom, description, prix, duree_jours, actif
+    - Séance : titre, description, date_heure (format ISO), coach (id), capacite
+    - Réservation : seance (id)
+    - Paiement : montant, abonnement (id) ou seance (id), use_balance (optionnel)
+    - Recharge : montant
+    - Charge : titre, montant, date (YYYY-MM-DD), description
+    - Présence : date (YYYY-MM-DD), present (bool), commentaire
+
+- **Factures** : Le champ `fichier_pdf_url` donne le lien direct vers le PDF.
+- **Statuts** :
+    - Paiement : EN_ATTENTE, PAYE, ECHEC
+    - Réservation : CONFIRMEE, ANNULEE
+
+- **Téléphone** : facultatif à l'inscription, mais utile pour CinetPay.
+- **Solde** : visible dans le profil utilisateur, utilisé pour payer sans passer par CinetPay.
+
+---
+
+## Exemple de flux utilisateur (client)
+1. S'inscrire (`/api/register/`)
+2. Se connecter (`/api/token/`)
+3. Voir les abonnements ou séances disponibles
+4. Initier un paiement pour un abonnement ou une séance (`/api/init-paiement/`)
+5. Payer via CinetPay ou solde
+6. Télécharger la facture PDF après paiement
+7. Réserver une séance
+8. Voir ses réservations, paiements, factures
+
+---
+## FLUX D'UTILISATION TYPIQUES
+
+### Inscription et connexion d'un client
+
+1. Le client s'inscrit via `/register/`
+2. Le client se connecte via `/login/` et obtient un token JWT
+3. Le client peut consulter son profil via `/me/`
+
+### Réservation d'une séance
+
+1. Le client consulte la liste des séances via `/seances/`
+2. Le client sélectionne une séance et effectue une réservation via `/reservations/`
+3. Le client paie pour la séance via `/init-paiement/`
+   - Si le client utilise son solde, le paiement est immédiat
+   - Si le client utilise CinetPay, il est redirigé vers la plateforme de paiement
+
+### Recharge du compte client
+
+1. Le client initie une recharge via `/recharge-compte/`
+2. Le client est redirigé vers CinetPay pour effectuer le paiement
+3. Après le paiement, CinetPay notifie le backend via le webhook
+4. Le solde du client est automatiquement mis à jour
+
+### Gestion des abonnements (Admin)
+
+1. L'administrateur se connecte via `/login/`
+2. L'administrateur peut créer, modifier ou supprimer des abonnements via `/abonnements/`
+
+### Consultation des rapports financiers (Admin)
+
+1. L'administrateur se connecte via `/login/`
+2. L'administrateur accède aux rapports financiers via `/financial-report/`
+
+## NOTES IMPORTANTES
+
+1. **Authentification** : Tous les endpoints (sauf inscription et connexion) nécessitent un token JWT valide.
+2. **Permissions** : Certains endpoints sont restreints à certains rôles (ADMIN, EMPLOYE, CLIENT).
+3. **Pagination** : Les listes sont paginées avec 7 éléments par page par défaut.
+4. **Filtres et recherche** : Plusieurs endpoints supportent le filtrage et la recherche.
+5. **Solde du compte** : Les clients peuvent payer avec leur solde ou via CinetPay.
+6. **Factures** : Une facture est automatiquement générée pour chaque paiement réussi.
+7. **URLs de fichiers** : Les URLs des fichiers PDF sont relatives à la base URL du serveur.
+
+## CODES D'ERREUR COMMUNS
+
+- **400 Bad Request** : Données invalides ou manquantes
+- **401 Unauthorized** : Token JWT manquant ou invalide
+- **403 Forbidden** : Permissions insuffisantes pour l'action demandée
+- **404 Not Found** : Ressource non trouvée
+- **500 Internal Server Error** : Erreur serveur
+
+## RECOMMANDATIONS POUR LE FRONTEND
+
+1. **Gestion des tokens** : Stockez les tokens JWT de manière sécurisée (localStorage ou sessionStorage) et incluez-les dans toutes les requêtes.
+2. **Rafraîchissement des tokens** : Implémentez un mécanisme pour rafraîchir automatiquement le token d'accès lorsqu'il expire.
+3. **Gestion des erreurs** : Traitez correctement les erreurs renvoyées par l'API et affichez des messages appropriés à l'utilisateur.
+4. **Validation des formulaires** : Validez les données côté client avant de les envoyer à l'API pour éviter les erreurs 400.
+5. **Interface adaptative** : Adaptez l'interface en fonction du rôle de l'utilisateur (ADMIN, EMPLOYE, CLIENT).
+6. **Pagination** : Implémentez la pagination côté client pour les listes longues.
+7. **Mise en cache** : Mettez en cache certaines données (comme les abonnements) pour améliorer les performances.
+8. **Redirection CinetPay** : Gérez correctement la redirection vers CinetPay et le retour après paiement.
