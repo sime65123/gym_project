@@ -64,15 +64,6 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 
-# settings.py
-CINETPAY_APIKEY = '1028519070685043570c4ac6.05836446'
-CINETPAY_SITEID = '105898529'
-CINETPAY_CURRENCY = 'XOF'
-
-CINETPAY_NOTIFY_URL = 'https://127.0.0.1:8000/api/cinetpay/notify/'
-CINETPAY_RETURN_URL = 'https://127.0.0.1:8000/paiement/success/'
-
-
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),

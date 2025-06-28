@@ -10,23 +10,32 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from django.conf import settings
-from cinetpay import Order
+#from cinetpay import Order  # SUPPRIMER
 from rest_framework.decorators import action
 
 from .models import (
     User, Abonnement, Seance,
-    Reservation, Paiement, Facture,
-    Charge, PresencePersonnel, Personnel
+    Reservation, Paiement, Ticket,
+    Charge, PresencePersonnel, Personnel,
+    AbonnementClient
 )
 from .serializers import (
     UserRegisterSerializer, UserSerializer,
     AbonnementSerializer, SeanceSerializer,
     ReservationSerializer, PaiementSerializer,
-    FactureSerializer, ChargeSerializer,
-    PresencePersonnelSerializer, PersonnelSerializer
+    #FactureSerializer,  # SUPPRIMER
+    ChargeSerializer,
+    PresencePersonnelSerializer, PersonnelSerializer,
+    TicketSerializer,
+    AbonnementClientSerializer,
+    MyTokenObtainPairSerializer
 )
 from .permissions import IsAdmin, IsEmploye, IsClient, IsAdminOrEmploye, IsClientOrEmploye
-from .cinetpay_client import cinetpay_client
+# from .cinetpay_client import cinetpay_client  # SUPPRIMER
+from django.utils import timezone
+from .utils import generer_facture_pdf
+from rest_framework_simplejwt.views import TokenObtainPairView
+
 # ---------- Rapports Financiers ----------
 class FinancialReportView(APIView):
     permission_classes = [IsAdmin]
@@ -112,54 +121,6 @@ class FinancialReportView(APIView):
         })
 
 
-# ---------- Recharge Compte ----------
-class RechargeCompteView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request):
-        montant = request.data.get('montant')
-        if not montant:
-            return Response({"error": "Montant requis"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            montant = float(montant)
-            if montant <= 0:
-                return Response({"error": "Le montant doit être positif"}, status=status.HTTP_400_BAD_REQUEST)
-        except ValueError:
-            return Response({"error": "Montant invalide"}, status=status.HTTP_400_BAD_REQUEST)
-
-        transaction_id = f"recharge-{request.user.id}-{uuid4().hex[:8]}"
-
-        # Créer un paiement pour la recharge
-        paiement = Paiement.objects.create(
-            client=request.user,
-            montant=montant,
-            mode_paiement='CINETPAY',
-            status='EN_ATTENTE',
-            transaction_id=transaction_id
-        )
-
-        order = Order(
-            transaction_id=transaction_id,
-            amount=montant,
-            currency=settings.CINETPAY_CURRENCY,
-            description=f"Recharge compte GYM ZONE {transaction_id}",
-            notify_url=settings.CINETPAY_NOTIFY_URL,
-            return_url=settings.CINETPAY_RETURN_URL,
-            customer_name=request.user.nom,
-            customer_surname=request.user.prenom,
-            customer_phone_number=request.user.telephone,
-            customer_email=request.user.email,
-        )
-
-        response = cinetpay_client.initialize_transaction(order)
-
-        return Response({
-            "paiement_id": paiement.id,
-            "transaction_id": transaction_id,
-            "cinetpay_response": response.json
-        }, status=response.status_code)
-
 # ---------- Auth ----------
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -183,135 +144,117 @@ class MeView(APIView):
         return Response(serializer.errors, status=400)
 
 
+# ---------- Gestion des Paiements ----------
+class ValiderPaiementView(APIView):
+    """Permet à un employé de valider un paiement en attente"""
+    permission_classes = [IsEmploye]
 
-# ---------- Paiement Init ----------
-class PaiementInitAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    def post(self, request, paiement_id):
+        try:
+            paiement = Paiement.objects.get(id=paiement_id, status='EN_ATTENTE')
+            paiement.status = 'PAYE'
+            paiement.save()
+            
+            return Response({
+                "message": "Paiement validé avec succès",
+                "paiement_id": paiement.id
+            })
+        except Paiement.DoesNotExist:
+            return Response(
+                {"error": "Paiement introuvable ou déjà payé"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+
+class PaiementDirectView(APIView):
+    """Permet à un employé d'enregistrer un paiement direct à la salle"""
+    permission_classes = [IsEmploye]
 
     def post(self, request):
+        client_id = request.data.get('client_id')
         montant = request.data.get('montant')
-        if not montant:
-            return Response({"error": "Montant requis"}, status=status.HTTP_400_BAD_REQUEST)
+        mode_paiement = request.data.get('mode_paiement', 'ESPECE')
+        abonnement_id = request.data.get('abonnement_id')
+        seance_id = request.data.get('seance_id')
+        
+        if not client_id or not montant:
+            return Response(
+                {"error": "client_id et montant sont requis"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
         try:
-            montant = float(montant)
-            if montant <= 0:
-                return Response({"error": "Le montant doit être positif"}, status=status.HTTP_400_BAD_REQUEST)
-        except ValueError:
-            return Response({"error": "Montant invalide"}, status=status.HTTP_400_BAD_REQUEST)
-
-        abonnement_id = request.data.get('abonnement')
-        seance_id = request.data.get('seance')
-        use_balance = request.data.get('use_balance', False)
-
-        # Vérification d'existence si fourni
-        if abonnement_id:
-            if not Abonnement.objects.filter(id=abonnement_id).exists():
-                return Response({"error": f"Abonnement {abonnement_id} introuvable"}, status=status.HTTP_400_BAD_REQUEST)
-        if seance_id:
-            if not Seance.objects.filter(id=seance_id).exists():
-                return Response({"error": f"Séance {seance_id} introuvable"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Si l'utilisateur veut utiliser son solde
-        if use_balance:
-            # Vérifier si le solde est suffisant
-            if request.user.solde < montant:
-                return Response({
-                    "error": "Solde insuffisant",
-                    "solde": request.user.solde,
-                    "montant": montant
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Utiliser une transaction pour garantir l'atomicité
-            with transaction.atomic():
-                # Créer un paiement directement payé
-                paiement = Paiement.objects.create(
-                    client=request.user,
-                    montant=montant,
-                    abonnement_id=abonnement_id or None,
-                    seance_id=seance_id or None,
-                    mode_paiement='SOLDE',
-                    status='PAYE',
-                    transaction_id=f"solde-{request.user.id}-{uuid4().hex[:8]}"
-                )
-                
-                # Déduire le montant du solde de l'utilisateur
-                request.user.solde = F('solde') - montant
-                request.user.save(update_fields=['solde'])
-            
-            return Response({
-                "paiement_id": paiement.id,
-                "status": "PAYE",
-                "message": "Paiement effectué avec succès via le solde du compte"
-            })
-        else:
-            # Paiement via CinetPay
-            transaction_id = f"{request.user.id}-{uuid4().hex[:8]}"
-
-            paiement = Paiement.objects.create(
-                client=request.user,
-                montant=montant,
-                abonnement_id=abonnement_id or None,
-                seance_id=seance_id or None,
-                mode_paiement='CINETPAY',
-                status='EN_ATTENTE',
-                transaction_id=transaction_id
+            client = User.objects.get(id=client_id, role='CLIENT')
+        except User.DoesNotExist:
+            return Response(
+                {"error": "Client introuvable"}, 
+                status=status.HTTP_404_NOT_FOUND
             )
+        
+        # Créer le paiement directement payé
+        paiement = Paiement.objects.create(
+            client=client,
+            montant=montant,
+            mode_paiement=mode_paiement,
+            status='PAYE',
+            abonnement_id=abonnement_id,
+            seance_id=seance_id
+        )
 
-            order = Order(
-                transaction_id=transaction_id,
-                amount=montant,
-                currency=settings.CINETPAY_CURRENCY,
-                description=f"Paiement GYM ZONE {transaction_id}",
-                notify_url=settings.CINETPAY_NOTIFY_URL,
-                return_url=settings.CINETPAY_RETURN_URL,
-                customer_name=request.user.nom,
-                customer_surname=request.user.prenom,
-                customer_phone_number=request.user.telephone,
-                customer_email=request.user.email,
-            )
-
-            response = cinetpay_client.initialize_transaction(order)
-
-            return Response({
-                "paiement_id": paiement.id,
-                "transaction_id": transaction_id,
-                "cinetpay_response": response.json
-            }, status=response.status_code)
+        return Response({
+            "message": "Paiement enregistré avec succès",
+            "paiement_id": paiement.id
+        })
 
 
-# ---------- Webhook ----------
-class CinetPayWebhook(APIView):
-    permission_classes = [permissions.AllowAny]
+class AbonnementDirectView(APIView):
+    """Permet à un employé d'enregistrer un abonnement direct à la salle"""
+    permission_classes = [IsEmploye]
 
     def post(self, request):
-        tx_id = request.data.get('cpm_trans_id')
-        if not tx_id:
-            return Response({"error": "transaction manquant"}, status=status.HTTP_400_BAD_REQUEST)
-        resp = cinetpay_client.get_transaction(tx_id)
-        data = resp.json
-
-        paiement = Paiement.objects.filter(transaction_id=tx_id).first()
-        if not paiement:
-            return Response({"error": "paiement introuvable"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Utiliser une transaction pour garantir l'atomicité
-        with transaction.atomic():
-            if data.get('cpm_result') == '00':
-                paiement.status = 'PAYE'
-                
-                # Si c'est une recharge de compte (vérifier le préfixe du transaction_id)
-                if tx_id.startswith('recharge-'):
-                    # Mettre à jour le solde de l'utilisateur
-                    user = paiement.client
-                    user.solde = F('solde') + paiement.montant
-                    user.save(update_fields=['solde'])
-            else:
-                paiement.status = 'ECHEC'
-            
-            paiement.save()
+        client_id = request.data.get('client_id')
+        abonnement_id = request.data.get('abonnement_id')
+        mode_paiement = request.data.get('mode_paiement', 'ESPECE')
         
-        return Response({"message": "OK"})
+        if not client_id or not abonnement_id:
+            return Response(
+                {"error": "client_id et abonnement_id sont requis"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            client = User.objects.get(id=client_id, role='CLIENT')
+            abonnement = Abonnement.objects.get(id=abonnement_id)
+        except (User.DoesNotExist, Abonnement.DoesNotExist):
+            return Response(
+                {"error": "Client ou abonnement introuvable"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Créer le paiement directement payé
+        paiement = Paiement.objects.create(
+            client=client,
+            abonnement=abonnement,
+            montant=abonnement.prix,
+            mode_paiement=mode_paiement,
+            status='PAYE'
+        )
+        
+        # Remplace la création du ticket par get_or_create pour éviter l'erreur d'unicité
+        pdf_file = generer_facture_pdf(paiement, paiement.abonnement, type_ticket='ABONNEMENT')
+        ticket, created = Ticket.objects.get_or_create(
+            paiement=paiement,
+            defaults={
+                'fichier_pdf': pdf_file,
+                'type_ticket': 'ABONNEMENT'
+            }
+        )
+        
+        return Response({
+            "message": "Abonnement enregistré avec succès",
+            "paiement_id": paiement.id,
+            "montant": abonnement.prix
+        })
 
 
 # ---------- CRUD Métiers ----------
@@ -347,7 +290,6 @@ class AbonnementViewSet(viewsets.ModelViewSet):
                 'email': client.email,
                 'nom': client.nom,
                 'prenom': client.prenom,
-                'telephone': client.telephone,
                 'date_paiement': paiement.date_paiement,
                 'date_fin': date_fin if abonnement.duree_jours else None,
                 'jours_restants': jours_restants,
@@ -421,7 +363,30 @@ class ReservationViewSet(viewsets.ModelViewSet):
         return Reservation.objects.none()
 
     def perform_create(self, serializer):
-        serializer.save(client=self.request.user)
+        reservation = serializer.save(client=self.request.user)
+        
+        # Calculer le montant selon le nombre d'heures (tarif par heure)
+        tarif_par_heure = 5000  # 5000 FCFA par heure
+        montant_calcule = reservation.nombre_heures * tarif_par_heure
+        reservation.montant_calcule = montant_calcule
+        reservation.save()
+        
+        # Créer automatiquement un paiement en attente pour cette réservation
+        paiement = Paiement.objects.create(
+            client=self.request.user,
+            reservation=reservation,
+            montant=montant_calcule,
+            mode_paiement='ESPECE',
+            status='EN_ATTENTE'
+        )
+        
+        # Générer le ticket PDF (billet de réservation)
+        pdf_file = generer_facture_pdf(reservation, paiement, type_ticket='SEANCE')
+        Ticket.objects.create(
+            paiement=paiement,
+            fichier_pdf=pdf_file,
+            type_ticket='SEANCE'
+        )
 
 
 class PaiementViewSet(viewsets.ModelViewSet):
@@ -442,9 +407,10 @@ class PaiementViewSet(viewsets.ModelViewSet):
         return Paiement.objects.none()
 
 
-class FactureViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Facture.objects.all()
-    serializer_class = FactureSerializer
+class TicketViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Ticket.objects.all()
+    # Il faudra créer TicketSerializer
+    serializer_class = TicketSerializer
 
     def get_permissions(self):
         return [IsClient()]
@@ -452,8 +418,8 @@ class FactureViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.is_authenticated and user.role == 'CLIENT':
-            return Facture.objects.filter(paiement__client=user)
-        return Facture.objects.none()
+            return Ticket.objects.filter(paiement__client=user)
+        return Ticket.objects.none()
 
 
 class ChargeViewSet(viewsets.ModelViewSet):
@@ -502,9 +468,177 @@ class PresencePersonnelViewSet(viewsets.ModelViewSet):
 class UserListView(generics.ListAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAdminOrEmploye]
 
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [IsAdmin]
+
+class SeanceDirecteView(APIView):
+    permission_classes = [IsEmploye]
+
+    def post(self, request):
+        data = request.data
+        client_id = data.get('client_id')
+        seance = Seance.objects.create(
+            date_jour=data['date_jour'],
+            client_nom=data.get('client_nom', ''),
+            client_prenom=data.get('client_prenom', ''),
+            nombre_heures=data['nombre_heures'],
+            montant_paye=data['montant_paye'],
+        )
+        paiement = Paiement.objects.create(
+            client_id=client_id if client_id else None,
+            seance=seance,
+            montant=data['montant_paye'],
+            status='PAYE',
+            mode_paiement='ESPECE'
+        )
+        pdf_file = generer_facture_pdf(seance, paiement, type_ticket='SEANCE')
+        ticket = Ticket.objects.create(
+            paiement=paiement,
+            fichier_pdf=pdf_file,
+            type_ticket='SEANCE'
+        )
+        response_data = SeanceSerializer(seance, context={'request': request}).data
+        response_data['ticket_id'] = ticket.id
+        response_data['ticket_pdf_url'] = ticket.fichier_pdf.url if ticket.fichier_pdf else None
+        return Response(response_data, status=status.HTTP_201_CREATED)
+
+class AbonnementClientDirectView(APIView):
+    permission_classes = [IsEmploye]
+
+    def post(self, request):
+        data = request.data
+        client_id = data['client_id']
+        abonnement_id = data['abonnement_id']
+        date_debut_str = data.get('date_debut', timezone.now().date())
+        if isinstance(date_debut_str, str):
+            date_debut = datetime.strptime(date_debut_str, "%Y-%m-%d").date()
+        else:
+            date_debut = date_debut_str
+        abonnement = Abonnement.objects.get(id=abonnement_id)
+        date_fin = date_debut + timedelta(days=abonnement.duree_jours)
+        paiement = Paiement.objects.create(
+            client_id=client_id,
+            abonnement_id=abonnement_id,
+            montant=abonnement.prix,
+            status='PAYE',
+            mode_paiement='ESPECE'
+        )
+        ab_client = AbonnementClient.objects.create(
+            client_id=client_id,
+            abonnement_id=abonnement_id,
+            date_debut=date_debut,
+            date_fin=date_fin,
+            actif=True,
+            paiement=paiement
+        )
+        pdf_file = generer_facture_pdf(ab_client, paiement, type_ticket='ABONNEMENT')
+        ticket, created = Ticket.objects.get_or_create(
+            paiement=paiement,
+            defaults={
+                'fichier_pdf': pdf_file,
+                'type_ticket': 'ABONNEMENT'
+            }
+        )
+        response_data = AbonnementClientSerializer(ab_client).data
+        response_data['ticket_id'] = ticket.id
+        response_data['ticket_pdf_url'] = ticket.fichier_pdf.url if ticket.fichier_pdf else None
+        return Response(response_data, status=status.HTTP_201_CREATED)
+
+class ValiderReservationSeanceView(APIView):
+    permission_classes = [IsEmploye]
+
+    def post(self, request, reservation_id):
+        try:
+            reservation = Reservation.objects.get(id=reservation_id, statut='EN_ATTENTE')
+        except Reservation.DoesNotExist:
+            return Response({'error': 'Réservation introuvable ou déjà validée'}, status=404)
+        reservation.statut = 'CONFIRMEE'
+        reservation.paye = True
+        reservation.save()
+        paiement = Paiement.objects.create(
+            client=reservation.client,
+            seance=reservation.seance,
+            montant=reservation.seance.montant_paye or 0,
+            status='PAYE',
+            mode_paiement='ESPECE',
+            reservation=reservation
+        )
+        pdf_file = generer_facture_pdf(reservation.seance, paiement, type_ticket='SEANCE')
+        ticket = Ticket.objects.create(
+            paiement=paiement,
+            fichier_pdf=pdf_file,
+            type_ticket='SEANCE'
+        )
+        return Response({'message': 'Réservation validée et facture générée.', 'ticket_id': ticket.id, 'ticket_pdf_url': ticket.fichier_pdf.url if ticket.fichier_pdf else None})
+
+class ValiderReservationAbonnementView(APIView):
+    permission_classes = [IsEmploye]
+
+    def post(self, request, ab_client_id):
+        try:
+            ab_client = AbonnementClient.objects.get(id=ab_client_id, actif=False)
+        except AbonnementClient.DoesNotExist:
+            return Response({'error': 'Abonnement client introuvable ou déjà validé'}, status=404)
+        ab_client.actif = True
+        ab_client.save()
+        paiement = Paiement.objects.create(
+            client=ab_client.client,
+            abonnement=ab_client.abonnement,
+            montant=ab_client.abonnement.prix,
+            status='PAYE',
+            mode_paiement='ESPECE'
+        )
+        ab_client.paiement = paiement
+        ab_client.save()
+        pdf_file = generer_facture_pdf(ab_client, paiement, type_ticket='ABONNEMENT')
+        ticket = Ticket.objects.create(
+            paiement=paiement,
+            fichier_pdf=pdf_file,
+            type_ticket='ABONNEMENT'
+        )
+        return Response({'message': 'Abonnement validé et facture générée.', 'ticket_id': ticket.id, 'ticket_pdf_url': ticket.fichier_pdf.url if ticket.fichier_pdf else None})
+
+class AbonnementClientReservationView(APIView):
+    permission_classes = [IsClient]
+
+    def post(self, request):
+        data = request.data
+        abonnement_id = data['abonnement_id']
+        date_debut = data.get('date_debut', timezone.now().date())
+        abonnement = Abonnement.objects.get(id=abonnement_id)
+        date_fin = date_debut + timedelta(days=abonnement.duree_jours)
+        ab_client = AbonnementClient.objects.create(
+            client=request.user,
+            abonnement_id=abonnement_id,
+            date_debut=date_debut,
+            date_fin=date_fin,
+            actif=False
+        )
+        paiement = Paiement.objects.create(
+            client=request.user,
+            abonnement_id=abonnement_id,
+            montant=abonnement.prix,
+            status='EN_ATTENTE',
+            mode_paiement='ESPECE'
+        )
+        # Générer le ticket PDF (billet de réservation)
+        pdf_file = generer_facture_pdf(ab_client, paiement, type_ticket='ABONNEMENT')
+        Ticket.objects.create(
+            paiement=paiement,
+            fichier_pdf=pdf_file,
+            type_ticket='ABONNEMENT'
+        )
+        return Response({'message': 'Réservation d\'abonnement enregistrée, ticket généré.'}, status=status.HTTP_201_CREATED)
+
+class AbonnementClientViewSet(viewsets.ModelViewSet):
+    queryset = AbonnementClient.objects.all()
+    serializer_class = AbonnementClientSerializer
+    permission_classes = [IsAdminOrEmploye]
+
+class LoginView(TokenObtainPairView):
+    serializer_class = MyTokenObtainPairSerializer
+    permission_classes = []

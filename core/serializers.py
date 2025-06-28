@@ -1,6 +1,10 @@
 from rest_framework import serializers
 from .models import User
 from django.contrib.auth import authenticate
+from .models import AbonnementClient
+from .models import Ticket
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from django.conf import settings
 
 class UserRegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
@@ -22,13 +26,11 @@ class UserRegisterSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'email', 'nom', 'prenom', 'telephone', 'role', 'solde']
-
-
+        fields = ['id', 'email', 'nom', 'prenom', 'role']
 
 from .models import (
     Abonnement, Seance, Reservation, Paiement,
-    Facture, Charge, PresencePersonnel, User, Personnel
+    Ticket, Charge, PresencePersonnel, User, Personnel
 )
 
 class AbonnementSerializer(serializers.ModelSerializer):
@@ -42,29 +44,39 @@ class PersonnelSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class SeanceSerializer(serializers.ModelSerializer):
-    coach = PersonnelSerializer(read_only=True)
-    coach_id = serializers.PrimaryKeyRelatedField(
-        queryset=Personnel.objects.filter(categorie='COACH'), 
-        source='coach', 
-        write_only=True,
-        required=False,
-        allow_null=True
-    )
-
+    ticket_url = serializers.SerializerMethodField()
+    
     class Meta:
         model = Seance
-        fields = '__all__'
-
+        fields = [
+            'id', 'client_nom', 'client_prenom', 'date_jour', 'nombre_heures', 'montant_paye',
+            'ticket_url'
+        ]
+    
+    def get_ticket_url(self, obj):
+        try:
+            paiement = obj.paiement_set.first()
+            if paiement and hasattr(paiement, 'ticket') and paiement.ticket:
+                request = self.context.get('request')
+                url = paiement.ticket.fichier_pdf.url
+                if request is not None:
+                    return request.build_absolute_uri(url)
+                # fallback
+                return f"{settings.MEDIA_URL}{url}"
+        except:
+            pass
+        return None
 
 class ReservationSerializer(serializers.ModelSerializer):
     client = serializers.StringRelatedField(read_only=True)
+    client_nom = serializers.CharField(source='client.nom', read_only=True)
+    client_prenom = serializers.CharField(source='client.prenom', read_only=True)
+    seance_titre = serializers.CharField(source='seance.titre', read_only=True)
 
     class Meta:
         model = Reservation
-        fields = '__all__'
+        fields = ['id', 'client', 'client_nom', 'client_prenom', 'seance', 'seance_titre', 'date_reservation', 'statut', 'paye', 'date_heure_souhaitee', 'nombre_heures', 'montant_calcule', 'description']
         read_only_fields = ['client', 'date_reservation']
-
-
 
 class PaiementSerializer(serializers.ModelSerializer):
     client = serializers.StringRelatedField(read_only=True)
@@ -76,29 +88,21 @@ class PaiementSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['client', 'date_paiement']
 
-
-
-class FactureSerializer(serializers.ModelSerializer):
-    fichier_pdf_url = serializers.SerializerMethodField()
-    paiement = PaiementSerializer(read_only=True)
-
+class TicketSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Facture
-        fields = ['id', 'uuid', 'date_generation', 'paiement', 'fichier_pdf_url']
-
-    def get_fichier_pdf_url(self, obj):
-        request = self.context.get('request')
-        if obj.fichier_pdf and hasattr(obj.fichier_pdf, 'url'):
-            return request.build_absolute_uri(obj.fichier_pdf.url)
-        return None
-
-
+        model = Ticket
+        fields = '__all__'
 
 class ChargeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Charge
         fields = '__all__'
 
+class BlankableTimeField(serializers.TimeField):
+    def to_internal_value(self, value):
+        if value in ("", None):
+            return None
+        return super().to_internal_value(value)
 
 class PresencePersonnelSerializer(serializers.ModelSerializer):
     personnel = PersonnelSerializer(read_only=True)
@@ -117,25 +121,19 @@ class PresencePersonnelSerializer(serializers.ModelSerializer):
         required=False, 
         allow_null=True
     )
-    heure_arrivee = serializers.TimeField(required=False, allow_null=True)
+    heure_arrivee = BlankableTimeField(required=False, allow_null=True)
 
     class Meta:
         model = PresencePersonnel
         fields = ['id', 'personnel', 'personnel_id', 'employe', 'employe_id', 'statut', 'heure_arrivee', 'date_jour']
 
     def validate(self, data):
-        print("=== DEBUG VALIDATE ===")
-        print("Data received:", data)
-        
-        # Si le statut est ABSENT, on s'assure que heure_arrivee est None
+        # Si le statut est ABSENT, on force heure_arrivee à None
         if data.get('statut') == 'ABSENT':
             data['heure_arrivee'] = None
-        
-        # Si heure_arrivee est une chaîne vide ou None, on la met à None
-        if data.get('heure_arrivee') == '' or data.get('heure_arrivee') is None:
+        # Si heure_arrivee est une chaîne vide, absente ou non conforme, on la met à None
+        if not data.get('heure_arrivee') or data.get('heure_arrivee') in ['', None]:
             data['heure_arrivee'] = None
-            
-        print("Data after validation:", data)
         return data
 
     def create(self, validated_data):
@@ -166,3 +164,23 @@ class PresencePersonnelSerializer(serializers.ModelSerializer):
             import traceback
             print("Traceback:", traceback.format_exc())
             raise
+
+class AbonnementClientSerializer(serializers.ModelSerializer):
+    client_nom = serializers.CharField(source='client.nom', read_only=True)
+    client_prenom = serializers.CharField(source='client.prenom', read_only=True)
+    abonnement_nom = serializers.CharField(source='abonnement.nom', read_only=True)
+    class Meta:
+        model = AbonnementClient
+        fields = ['id', 'client', 'client_nom', 'client_prenom', 'abonnement', 'abonnement_nom', 'date_debut', 'date_fin', 'actif', 'paiement']
+
+class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token['role'] = user.role
+        token['email'] = user.email
+        return token
+
+    def validate(self, attrs):
+        attrs['username'] = attrs.get('email')
+        return super().validate(attrs)
