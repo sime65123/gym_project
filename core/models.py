@@ -3,6 +3,7 @@ from django.db import models
 from django.utils import timezone
 from django.conf import settings
 import uuid
+from datetime import timedelta
 
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, role="CLIENT", **extra_fields):
@@ -162,6 +163,103 @@ class AbonnementClient(models.Model):
 
     def __str__(self):
         return f"{self.client} - {self.abonnement} ({self.date_debut} - {self.date_fin})"
+
+
+class AbonnementClientPresentiel(models.Model):
+    """Modèle pour gérer les abonnements clients en présentiel avec paiement en plusieurs tranches"""
+    STATUT_CHOICES = [
+        ('EN_COURS', 'En cours'),
+        ('TERMINE', 'Terminé'),
+        ('EXPIRE', 'Expiré'),
+    ]
+    
+    STATUT_PAIEMENT_CHOICES = [
+        ('PAIEMENT_INACHEVE', 'Paiement inachevé'),
+        ('PAIEMENT_TERMINE', 'Paiement terminé'),
+    ]
+    
+    # Informations client (peut être un client existant ou nouveau)
+    client = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'CLIENT'}, null=True, blank=True, related_name='abonnements_presentiels')
+    client_nom = models.CharField(max_length=100)  # Pour les clients non enregistrés
+    client_prenom = models.CharField(max_length=100)  # Pour les clients non enregistrés
+    
+    # Informations abonnement
+    abonnement = models.ForeignKey(Abonnement, on_delete=models.CASCADE)
+    date_debut = models.DateField(default=timezone.now)
+    date_fin = models.DateField()
+    
+    # Gestion du paiement
+    montant_total = models.DecimalField(max_digits=10, decimal_places=2)  # Montant total de l'abonnement
+    montant_paye = models.DecimalField(max_digits=10, decimal_places=2, default=0)  # Montant déjà payé
+    statut_paiement = models.CharField(max_length=20, choices=STATUT_PAIEMENT_CHOICES, default='PAIEMENT_INACHEVE')
+    
+    # Statut de l'abonnement
+    statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default='EN_COURS')
+    
+    # Informations de création
+    date_creation = models.DateTimeField(auto_now_add=True)
+    employe_creation = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, limit_choices_to={'role': 'EMPLOYE'}, related_name='abonnements_crees')
+    
+    # Facture générée
+    facture_pdf = models.FileField(upload_to='factures/', null=True, blank=True)
+    
+    def __str__(self):
+        nom_client = f"{self.client_prenom} {self.client_nom}" if self.client_prenom and self.client_nom else str(self.client)
+        return f"{nom_client} - {self.abonnement.nom} ({self.date_debut} - {self.date_fin})"
+    
+    def save(self, *args, **kwargs):
+        # Calculer automatiquement la date de fin
+        if self.abonnement and self.date_debut:
+            self.date_fin = self.date_debut + timedelta(days=self.abonnement.duree_jours)
+        
+        # Mettre à jour le montant total si l'abonnement change
+        if self.abonnement:
+            self.montant_total = self.abonnement.prix
+        
+        # Mettre à jour le statut de paiement
+        if self.montant_paye >= self.montant_total:
+            self.statut_paiement = 'PAIEMENT_TERMINE'
+        else:
+            self.statut_paiement = 'PAIEMENT_INACHEVE'
+        
+        # Mettre à jour le statut de l'abonnement
+        if self.date_fin and self.date_fin < timezone.now().date():
+            self.statut = 'EXPIRE'
+        elif self.statut_paiement == 'PAIEMENT_TERMINE':
+            self.statut = 'EN_COURS'
+        
+        super().save(*args, **kwargs)
+
+
+class HistoriquePaiement(models.Model):
+    """Modèle pour tracer l'historique des paiements d'un abonnement présentiel"""
+    abonnement_presentiel = models.ForeignKey(AbonnementClientPresentiel, on_delete=models.CASCADE, related_name='historique_paiements')
+    montant_ajoute = models.DecimalField(max_digits=10, decimal_places=2)  # Montant ajouté lors de cette modification
+    montant_total_apres = models.DecimalField(max_digits=10, decimal_places=2)  # Montant total payé après cette modification
+    date_modification = models.DateTimeField(auto_now_add=True)
+    employe = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, limit_choices_to={'role': 'EMPLOYE'}, related_name='modifications_paiements')
+    
+    def __str__(self):
+        return f"Paiement {self.montant_ajoute} FCFA - {self.date_modification.strftime('%d/%m/%Y %H:%M')}"
+
+
+class PaiementTranche(models.Model):
+    """Modèle pour gérer les paiements en plusieurs tranches pour les abonnements présentiels"""
+    abonnement_presentiel = models.ForeignKey(AbonnementClientPresentiel, on_delete=models.CASCADE, related_name='paiements_tranches')
+    montant = models.DecimalField(max_digits=10, decimal_places=2)
+    date_paiement = models.DateTimeField(auto_now_add=True)
+    mode_paiement = models.CharField(max_length=20, choices=[('ESPECE', 'Espèce'), ('CARTE', 'Carte'), ('CHEQUE', 'Chèque')], default='ESPECE')
+    employe = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, limit_choices_to={'role': 'EMPLOYE'}, related_name='paiements_tranches_effectues')
+    
+    def __str__(self):
+        return f"Tranche {self.id} - {self.montant} FCFA - {self.date_paiement.strftime('%d/%m/%Y')}"
+    
+    def save(self, *args, **kwargs):
+        # Mettre à jour le montant payé de l'abonnement
+        if not self.pk:  # Nouveau paiement
+            self.abonnement_presentiel.montant_paye += self.montant
+            self.abonnement_presentiel.save()
+        super().save(*args, **kwargs)
 
 
 class Facture(models.Model):

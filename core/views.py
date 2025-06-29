@@ -17,7 +17,7 @@ from .models import (
     User, Abonnement, Seance,
     Reservation, Paiement, Ticket,
     Charge, PresencePersonnel, Personnel,
-    AbonnementClient
+    AbonnementClient, AbonnementClientPresentiel, PaiementTranche, HistoriquePaiement
 )
 from .serializers import (
     UserRegisterSerializer, UserSerializer,
@@ -28,6 +28,9 @@ from .serializers import (
     PresencePersonnelSerializer, PersonnelSerializer,
     TicketSerializer,
     AbonnementClientSerializer,
+    AbonnementClientPresentielSerializer,
+    PaiementTrancheSerializer,
+    HistoriquePaiementSerializer,
     MyTokenObtainPairSerializer
 )
 from .permissions import IsAdmin, IsEmploye, IsClient, IsAdminOrEmploye, IsClientOrEmploye
@@ -257,45 +260,221 @@ class AbonnementDirectView(APIView):
         })
 
 
-# ---------- CRUD Métiers ----------
+# ---------- Abonnements Clients Présentiels ----------
+class AbonnementClientPresentielViewSet(viewsets.ModelViewSet):
+    queryset = AbonnementClientPresentiel.objects.all()
+    serializer_class = AbonnementClientPresentielSerializer
+    permission_classes = [IsAdminOrEmploye]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    search_fields = ['client_nom', 'client_prenom', 'abonnement__nom']
+    filterset_fields = ['statut', 'statut_paiement', 'abonnement']
+
+    def perform_create(self, serializer):
+        # Assigner l'employé qui crée l'abonnement
+        serializer.save(employe_creation=self.request.user)
+
+    def perform_update(self, serializer):
+        # Vérifier si le montant payé a été modifié
+        if self.get_object().montant_paye != serializer.validated_data.get('montant_paye', self.get_object().montant_paye):
+            ancien_montant = self.get_object().montant_paye
+            nouveau_montant = serializer.validated_data.get('montant_paye', self.get_object().montant_paye)
+            montant_ajoute = nouveau_montant - ancien_montant
+            
+            if montant_ajoute > 0:
+                # Créer un historique de paiement
+                HistoriquePaiement.objects.create(
+                    abonnement_presentiel=self.get_object(),
+                    montant_ajoute=montant_ajoute,
+                    montant_total_apres=nouveau_montant,
+                    employe=self.request.user
+                )
+        
+        serializer.save()
+
+    @action(detail=True, methods=['post'])
+    def modifier_montant_paye(self, request, pk=None):
+        """Ajouter un montant au paiement et créer automatiquement l'historique"""
+        from decimal import Decimal
+        import logging
+        abonnement = self.get_object()
+        montant_ajoute = request.data.get('montant_ajoute')
+
+        if not montant_ajoute:
+            return Response(
+                {"error": "Le montant à ajouter est requis"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            montant_ajoute = Decimal(str(montant_ajoute))
+        except (ValueError, TypeError):
+            return Response(
+                {"error": "Le montant doit être un nombre valide"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if montant_ajoute <= 0:
+            return Response(
+                {"error": "Le montant ajouté doit être supérieur à zéro"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        ancien_montant = abonnement.montant_paye
+        nouveau_montant = ancien_montant + montant_ajoute
+        if nouveau_montant > abonnement.montant_total:
+            return Response(
+                {"error": f"Le montant total ne peut pas dépasser {abonnement.montant_total} FCFA"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        # Log pour debug
+        logging.warning(f"[DEBUG] Ajout paiement: ancien={ancien_montant}, ajoute={montant_ajoute}, nouveau={nouveau_montant}")
+        # Créer un historique de paiement
+        HistoriquePaiement.objects.create(
+            abonnement_presentiel=abonnement,
+            montant_ajoute=montant_ajoute,
+            montant_total_apres=nouveau_montant,
+            employe=request.user
+        )
+        # Mettre à jour le montant payé
+        abonnement.montant_paye = nouveau_montant
+        abonnement.save()
+
+        # Générer la facture automatiquement si paiement terminé et pas encore de facture
+        if abonnement.montant_paye >= abonnement.montant_total and not abonnement.facture_pdf:
+            from .utils import generer_facture_pdf
+            pdf_file = generer_facture_pdf(abonnement, None, type_ticket='ABONNEMENT')
+            abonnement.facture_pdf = pdf_file
+            abonnement.save()
+
+        return Response({
+            "message": "Montant ajouté avec succès",
+            "montant_paye": float(nouveau_montant)
+        })
+
+    @action(detail=True, methods=['post'])
+    def ajouter_paiement(self, request, pk=None):
+        """Ajouter un paiement en tranche pour un abonnement présentiel"""
+        abonnement = self.get_object()
+        montant = request.data.get('montant')
+        mode_paiement = request.data.get('mode_paiement', 'ESPECE')
+        
+        if not montant:
+            return Response(
+                {"error": "Le montant est requis"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Vérifier que le montant ne dépasse pas le montant restant
+        montant_restant = abonnement.montant_total - abonnement.montant_paye
+        if montant > montant_restant:
+            return Response(
+                {"error": f"Le montant ne peut pas dépasser {montant_restant} FCFA"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Créer le paiement en tranche
+        paiement_tranche = PaiementTranche.objects.create(
+            abonnement_presentiel=abonnement,
+            montant=montant,
+            mode_paiement=mode_paiement,
+            employe=request.user
+        )
+        
+        # Générer la facture si le paiement est complet
+        if abonnement.statut_paiement == 'PAIEMENT_TERMINE' and not abonnement.facture_pdf:
+            from .utils import generer_facture_pdf
+            pdf_file = generer_facture_pdf(abonnement, None, type_ticket='ABONNEMENT')
+            abonnement.facture_pdf = pdf_file
+            abonnement.save()
+        
+        return Response({
+            "message": "Paiement ajouté avec succès",
+            "paiement_id": paiement_tranche.id
+        })
+
+    @action(detail=True, methods=['post'])
+    def generer_facture(self, request, pk=None):
+        """Générer une facture pour un abonnement présentiel"""
+        abonnement = self.get_object()
+        
+        if abonnement.statut_paiement != 'PAIEMENT_TERMINE':
+            return Response(
+                {"error": "La facture ne peut être générée que lorsque le paiement est terminé"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if abonnement.facture_pdf:
+            return Response({
+                "message": "Facture déjà générée",
+                "facture_url": abonnement.facture_pdf.url
+            })
+        
+        # Générer la facture
+        from .utils import generer_facture_pdf
+        pdf_file = generer_facture_pdf(abonnement, None, type_ticket='ABONNEMENT')
+        abonnement.facture_pdf = pdf_file
+        abonnement.save()
+        
+        return Response({
+            "message": "Facture générée avec succès",
+            "facture_url": abonnement.facture_pdf.url
+        })
+
+    @action(detail=True, methods=['get'])
+    def telecharger_facture(self, request, pk=None):
+        """Télécharger la facture d'un abonnement présentiel"""
+        from django.http import FileResponse, Http404
+        from django.conf import settings
+        import os
+        
+        abonnement = self.get_object()
+        
+        if not abonnement.facture_pdf:
+            raise Http404("Facture non trouvée")
+        
+        try:
+            file_path = os.path.join(settings.MEDIA_ROOT, str(abonnement.facture_pdf))
+            if os.path.exists(file_path):
+                response = FileResponse(open(file_path, 'rb'), content_type='application/pdf')
+                response['Content-Disposition'] = f'attachment; filename="{os.path.basename(file_path)}"'
+                return response
+            else:
+                raise Http404("Fichier non trouvé sur le serveur")
+        except Exception as e:
+            raise Http404(f"Erreur lors du téléchargement: {str(e)}")
+
+
+class PaiementTrancheViewSet(viewsets.ModelViewSet):
+    queryset = PaiementTranche.objects.all()
+    serializer_class = PaiementTrancheSerializer
+    permission_classes = [IsAdminOrEmploye]
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['abonnement_presentiel', 'mode_paiement']
+
+    def perform_create(self, serializer):
+        # Assigner l'employé qui effectue le paiement
+        serializer.save(employe=self.request.user)
+
+
+# ---------- ViewSets existants ----------
 class AbonnementViewSet(viewsets.ModelViewSet):
     queryset = Abonnement.objects.all()
     serializer_class = AbonnementSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ['nom']
+    permission_classes = [IsAdminOrEmploye]
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'destroy']:
-            return [IsAdminOrEmploye()]
-        elif self.action == 'list':
-            return [permissions.AllowAny()]
-        return [permissions.IsAuthenticated()]
+            return [IsAdmin()]
+        return [IsAdminOrEmploye()]
 
     @action(detail=True, methods=['get'], permission_classes=[IsAdminOrEmploye])
     def clients(self, request, pk=None):
         abonnement = self.get_object()
-        # On suppose que chaque client a un Paiement PAYE pour cet abonnement
-        paiements = abonnement.paiement_set.filter(status='PAYE').select_related('client')
-        clients = []
-        for paiement in paiements:
-            client = paiement.client
-            # Calcul du nombre de jours restants (exemple: date_paiement + duree_jours)
-            if abonnement.duree_jours:
-                date_fin = paiement.date_paiement + timedelta(days=abonnement.duree_jours)
-                jours_restants = (date_fin - datetime.now()).days
-            else:
-                jours_restants = None
-            clients.append({
-                'id': client.id,
-                'email': client.email,
-                'nom': client.nom,
-                'prenom': client.prenom,
-                'date_paiement': paiement.date_paiement,
-                'date_fin': date_fin if abonnement.duree_jours else None,
-                'jours_restants': jours_restants,
-                'montant': paiement.montant,
-            })
-        return Response(clients)
+        clients = User.objects.filter(
+            abonnementclient__abonnement=abonnement,
+            abonnementclient__actif=True
+        )
+        serializer = UserSerializer(clients, many=True)
+        return Response(serializer.data)
 
 
 class SeanceViewSet(viewsets.ModelViewSet):
@@ -303,23 +482,22 @@ class SeanceViewSet(viewsets.ModelViewSet):
     serializer_class = SeanceSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ['titre']
+    permission_classes = [IsAdminOrEmploye]
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'destroy']:
-            return [IsAdminOrEmploye()]
-        return [permissions.IsAuthenticated()]
+            return [IsEmploye()]
+        return [IsAdminOrEmploye()]
 
     def create(self, request, *args, **kwargs):
-        print("=== DEBUG SEANCE CREATE ===")
-        print("Request data:", request.data)
-        print("Request user:", request.user)
-        response = super().create(request, *args, **kwargs)
-        print("Response data:", response.data)
-        return response
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     @action(detail=False, methods=['get'], permission_classes=[IsAdminOrEmploye])
     def coachs(self, request):
-        """Récupérer la liste des coachs du personnel"""
         coachs = Personnel.objects.filter(categorie='COACH')
         serializer = PersonnelSerializer(coachs, many=True)
         return Response(serializer.data)
@@ -327,20 +505,12 @@ class SeanceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], permission_classes=[IsAdminOrEmploye])
     def participants(self, request, pk=None):
         seance = self.get_object()
-        # On suppose que chaque client a une réservation CONFIRMEE pour cette séance
-        reservations = seance.reservation_set.filter(statut='CONFIRMEE').select_related('client')
-        participants = []
-        for reservation in reservations:
-            client = reservation.client
-            participants.append({
-                'id': client.id,
-                'email': client.email,
-                'nom': client.nom,
-                'prenom': client.prenom,
-                'telephone': client.telephone,
-                'date_reservation': reservation.date_reservation,
-            })
-        return Response(participants)
+        participants = User.objects.filter(
+            reservation__seance=seance,
+            reservation__statut='CONFIRMEE'
+        ).distinct()
+        serializer = UserSerializer(participants, many=True)
+        return Response(serializer.data)
 
 
 class ReservationViewSet(viewsets.ModelViewSet):
@@ -348,45 +518,23 @@ class ReservationViewSet(viewsets.ModelViewSet):
     serializer_class = ReservationSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['client', 'seance', 'statut']
+    permission_classes = [IsAdminOrEmploye]
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'destroy']:
-            return [IsClientOrEmploye()]
-        return [IsClientOrEmploye()]
+            return [IsEmploye()]
+        return [IsAdminOrEmploye()]
 
     def get_queryset(self):
-        user = self.request.user
-        if user.is_authenticated and user.role == 'CLIENT':
-            return Reservation.objects.filter(client=user)
-        elif user.is_authenticated and user.role == 'EMPLOYE':
-            return Reservation.objects.all()
-        return Reservation.objects.none()
+        if self.request.user.role == 'CLIENT':
+            return Reservation.objects.filter(client=self.request.user)
+        return Reservation.objects.all()
 
     def perform_create(self, serializer):
-        reservation = serializer.save(client=self.request.user)
-        
-        # Calculer le montant selon le nombre d'heures (tarif par heure)
-        tarif_par_heure = 5000  # 5000 FCFA par heure
-        montant_calcule = reservation.nombre_heures * tarif_par_heure
-        reservation.montant_calcule = montant_calcule
-        reservation.save()
-        
-        # Créer automatiquement un paiement en attente pour cette réservation
-        paiement = Paiement.objects.create(
-            client=self.request.user,
-            reservation=reservation,
-            montant=montant_calcule,
-            mode_paiement='ESPECE',
-            status='EN_ATTENTE'
-        )
-        
-        # Générer le ticket PDF (billet de réservation)
-        pdf_file = generer_facture_pdf(reservation, paiement, type_ticket='SEANCE')
-        Ticket.objects.create(
-            paiement=paiement,
-            fichier_pdf=pdf_file,
-            type_ticket='SEANCE'
-        )
+        if self.request.user.role == 'CLIENT':
+            serializer.save(client=self.request.user)
+        else:
+            serializer.save()
 
 
 class PaiementViewSet(viewsets.ModelViewSet):
@@ -394,39 +542,44 @@ class PaiementViewSet(viewsets.ModelViewSet):
     serializer_class = PaiementSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['client', 'abonnement', 'seance', 'status']
+    permission_classes = [IsAdminOrEmploye]
 
     def get_permissions(self):
-        return [IsClientOrEmploye()]
+        if self.action in ['create', 'update', 'destroy']:
+            return [IsEmploye()]
+        return [IsAdminOrEmploye()]
 
     def get_queryset(self):
-        user = self.request.user
-        if user.is_authenticated and user.role == 'CLIENT':
-            return Paiement.objects.filter(client=user)
-        elif user.is_authenticated and user.role == 'EMPLOYE':
-            return Paiement.objects.all()
-        return Paiement.objects.none()
+        if self.request.user.role == 'CLIENT':
+            return Paiement.objects.filter(client=self.request.user)
+        return Paiement.objects.all()
 
 
 class TicketViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Ticket.objects.all()
     # Il faudra créer TicketSerializer
     serializer_class = TicketSerializer
+    permission_classes = [IsAdminOrEmploye]
 
     def get_permissions(self):
-        return [IsClient()]
+        if self.action in ['create', 'update', 'destroy']:
+            return [IsEmploye()]
+        return [IsAdminOrEmploye()]
 
     def get_queryset(self):
-        user = self.request.user
-        if user.is_authenticated and user.role == 'CLIENT':
-            return Ticket.objects.filter(paiement__client=user)
-        return Ticket.objects.none()
+        if self.request.user.role == 'CLIENT':
+            return Ticket.objects.filter(paiement__client=self.request.user)
+        return Ticket.objects.all()
 
 
 class ChargeViewSet(viewsets.ModelViewSet):
     queryset = Charge.objects.all()
     serializer_class = ChargeSerializer
+    permission_classes = [IsAdminOrEmploye]
 
     def get_permissions(self):
+        if self.action in ['create', 'update', 'destroy']:
+            return [IsAdmin()]
         return [IsAdminOrEmploye()]
 
 
@@ -441,6 +594,7 @@ class PresencePersonnelViewSet(viewsets.ModelViewSet):
     serializer_class = PresencePersonnelSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['personnel', 'date_jour', 'statut']
+    permission_classes = [IsAdminOrEmploye]
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'destroy']:

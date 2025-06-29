@@ -5,7 +5,8 @@ from .views import (
     RegisterView, MeView,
     AbonnementViewSet, SeanceViewSet, ReservationViewSet,
     PaiementViewSet, TicketViewSet, ChargeViewSet, PresencePersonnelViewSet,
-    UserListView, UserDetailView, PersonnelViewSet
+    UserListView, UserDetailView, PersonnelViewSet,
+    AbonnementClientPresentielViewSet, PaiementTrancheViewSet, AbonnementClientViewSet
 )
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -18,6 +19,9 @@ router.register(r'tickets', TicketViewSet)
 router.register(r'charges', ChargeViewSet)
 router.register(r'presences', PresencePersonnelViewSet)
 router.register(r'personnel', PersonnelViewSet)
+router.register(r'abonnements-clients', AbonnementClientViewSet)
+router.register(r'abonnements-clients-presentiels', AbonnementClientPresentielViewSet)
+router.register(r'paiements-tranches', PaiementTrancheViewSet)
 
 urlpatterns = [
     path('seances/direct/', SeanceDirecteView.as_view(), name='seance-directe'),
