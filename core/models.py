@@ -30,6 +30,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True)
     nom = models.CharField(max_length=100)
     prenom = models.CharField(max_length=100)
+    telephone = models.CharField(max_length=20, blank=True, null=True, verbose_name='Téléphone')
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='CLIENT')
     date_joined = models.DateTimeField(default=timezone.now)
     is_active = models.BooleanField(default=True)
