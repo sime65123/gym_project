@@ -44,84 +44,116 @@ class FinancialReportView(APIView):
     permission_classes = [IsAdmin]
 
     def get(self, request):
-        # Période (par défaut: 12 derniers mois)
-        months = int(request.query_params.get('months', 12))
-        start_date = datetime.now() - timedelta(days=30 * months)
-        
-        # Revenus totaux (paiements avec statut PAYE)
-        total_revenue = Paiement.objects.filter(
-            status='PAYE'
-        ).aggregate(total=Sum('montant'))['total'] or 0
-        
-        # Dépenses totales
-        total_expenses = Charge.objects.aggregate(
-            total=Sum('montant')
-        )['total'] or 0
-        
-        # Profit
-        profit = total_revenue - total_expenses
-        
-        # Revenus mensuels
-        monthly_revenue = Paiement.objects.filter(
-            status='PAYE',
-            date_paiement__gte=start_date
-        ).annotate(
-            month=TruncMonth('date_paiement')
-        ).values('month').annotate(
-            total=Sum('montant')
-        ).order_by('month')
-        
-        # Dépenses mensuelles
-        monthly_expenses = Charge.objects.filter(
-            date__gte=start_date
-        ).annotate(
-            month=TruncMonth('date')
-        ).values('month').annotate(
-            total=Sum('montant')
-        ).order_by('month')
-        
-        # Statistiques des abonnements
-        subscription_stats = Paiement.objects.filter(
-            status='PAYE',
-            abonnement__isnull=False
-        ).values(
-            'abonnement__nom'
-        ).annotate(
-            count=Count('id'),
-            total=Sum('montant')
-        ).order_by('-total')
-        
-        # Statistiques des séances
-        session_stats = Paiement.objects.filter(
-            status='PAYE',
-            seance__isnull=False
-        ).values(
-            'seance__titre'
-        ).annotate(
-            count=Count('id'),
-            total=Sum('montant')
-        ).order_by('-total')
-        
-        # Nombre de clients actifs (ayant effectué un paiement dans la période)
-        active_clients = Paiement.objects.filter(
-            status='PAYE',
-            date_paiement__gte=start_date
-        ).values('client').distinct().count()
-        
-        return Response({
-            'summary': {
-                'total_revenue': total_revenue,
-                'total_expenses': total_expenses,
-                'profit': profit,
-                'active_clients': active_clients
-            },
-            'monthly': {
-                'revenue': monthly_revenue,
-                'expenses': monthly_expenses
-            },
-            'subscriptions': subscription_stats,
-            'sessions': session_stats
-        })
+        print("\n=== FinancialReportView.get() appelé ===")
+        print(f"Utilisateur: {request.user}")
+        print(f"Rôle: {getattr(request.user, 'role', 'Non défini')}")
+        print(f"Headers: {request.headers}")
+        print(f"Query params: {request.query_params}")
+
+        try:
+            # Période (par défaut: 12 derniers mois)
+            months = int(request.query_params.get('months', 12))
+            start_date = datetime.now() - timedelta(days=30 * months)
+            
+            print(f"Période analysée: {start_date} à {datetime.now()}")
+            
+            # Revenus totaux (paiements avec statut PAYE)
+            total_revenue = Paiement.objects.filter(
+                status='PAYE'
+            ).aggregate(total=Sum('montant'))['total'] or 0
+            
+            print(f"Revenus totaux: {total_revenue}")
+            
+            # Dépenses totales
+            total_expenses = Charge.objects.aggregate(
+                total=Sum('montant')
+            )['total'] or 0
+            
+            print(f"Dépenses totales: {total_expenses}")
+            
+            # Profit
+            profit = total_revenue - total_expenses
+            
+            # Revenus mensuels
+            monthly_revenue = Paiement.objects.filter(
+                status='PAYE',
+                date_paiement__gte=start_date
+            ).annotate(
+                month=TruncMonth('date_paiement')
+            ).values('month').annotate(
+                total=Sum('montant')
+            ).order_by('month')
+            
+            print(f"Revenus mensuels: {list(monthly_revenue)}")
+            
+            # Dépenses mensuelles
+            monthly_expenses = Charge.objects.filter(
+                date__gte=start_date
+            ).annotate(
+                month=TruncMonth('date')
+            ).values('month').annotate(
+                total=Sum('montant')
+            ).order_by('month')
+            
+            print(f"Dépenses mensuelles: {list(monthly_expenses)}")
+            
+            # Statistiques des abonnements
+            subscription_stats = Paiement.objects.filter(
+                status='PAYE',
+                abonnement__isnull=False
+            ).values(
+                'abonnement__nom'
+            ).annotate(
+                count=Count('id'),
+                total=Sum('montant')
+            ).order_by('-total')
+            
+            # Statistiques des séances
+            session_stats = Paiement.objects.filter(
+                status='PAYE',
+                seance__isnull=False
+            ).values(
+                'seance__titre'
+            ).annotate(
+                count=Count('id'),
+                total=Sum('montant')
+            ).order_by('-total')
+            
+            # Nombre de clients actifs (ayant effectué un paiement dans la période)
+            active_clients = Paiement.objects.filter(
+                status='PAYE',
+                date_paiement__gte=start_date
+            ).values('client').distinct().count()
+            
+            print(f"Nombre de clients actifs: {active_clients}")
+            
+            response_data = {
+                'summary': {
+                    'total_revenue': total_revenue,
+                    'total_expenses': total_expenses,
+                    'profit': profit,
+                    'active_clients': active_clients
+                },
+                'monthly': {
+                    'revenue': list(monthly_revenue),
+                    'expenses': list(monthly_expenses)
+                },
+                'subscriptions': list(subscription_stats),
+                'sessions': list(session_stats)
+            }
+            
+            print("Réponse finale:", response_data)
+            
+            return Response(response_data)
+            
+        except Exception as e:
+            print(f"Erreur dans FinancialReportView: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 # ---------- Auth ----------
@@ -133,17 +165,50 @@ class RegisterView(generics.CreateAPIView):
 
 class MeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = UserSerializer
 
     def get(self, request):
-        # On ne renvoie que les champs simples du user
-        serializer = UserSerializer(request.user)
+        """Récupérer les informations du profil de l'utilisateur connecté"""
+        serializer = self.serializer_class(request.user)
         return Response(serializer.data)
 
     def patch(self, request):
-        serializer = UserSerializer(request.user, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
+        """Mettre à jour le profil de l'utilisateur connecté"""
+        serializer = self.serializer_class(
+            request.user, 
+            data=request.data, 
+            partial=True
+        )
+        
+        if not serializer.is_valid():
+            return Response(
+                {'errors': serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Sauvegarder les modifications
+            user = serializer.save()
+            
+            # Préparer la réponse
+            response_data = self.serializer_class(user).data
+            
+            # Si le mot de passe a été modifié, on peut vouloir renvoyer un nouveau token
+            if 'password' in request.data:
+                from rest_framework_simplejwt.tokens import RefreshToken
+                refresh = RefreshToken.for_user(user)
+                response_data['tokens'] = {
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                }
+            
+            return Response(response_data)
+            
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
         return Response(serializer.errors, status=400)
 
 
@@ -619,10 +684,18 @@ class PresencePersonnelViewSet(viewsets.ModelViewSet):
         # On sauvegarde simplement
         serializer.save()
 
-class UserListView(generics.ListAPIView):
+class UserListView(generics.ListCreateAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [IsAdminOrEmploye]
+
+    def create(self, request, *args, **kwargs):
+        # Utiliser le sérialiseur d'inscription pour la création
+        serializer = UserRegisterSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = User.objects.all()

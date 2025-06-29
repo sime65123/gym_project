@@ -8,10 +8,11 @@ from django.conf import settings
 
 class UserRegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
+    telephone = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = User
-        fields = ['email', 'nom', 'prenom', 'password']
+        fields = ['email', 'nom', 'prenom', 'password', 'telephone']
 
     def create(self, validated_data):
         user = User.objects.create_user(
@@ -19,6 +20,7 @@ class UserRegisterSerializer(serializers.ModelSerializer):
             password=validated_data['password'],
             nom=validated_data['nom'],
             prenom=validated_data['prenom'],
+            telephone=validated_data.get('telephone', ''),
             role='CLIENT'
         )
         return user
@@ -26,7 +28,39 @@ class UserRegisterSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'email', 'nom', 'prenom', 'role']
+        fields = ['id', 'email', 'nom', 'prenom', 'telephone', 'role']
+        read_only_fields = ['id', 'role']
+        extra_kwargs = {
+            'password': {'write_only': True, 'required': False, 'allow_blank': True},
+            'email': {'required': True},
+            'nom': {'required': True},
+            'prenom': {'required': True},
+            'telephone': {'required': False, 'allow_blank': True}
+        }
+
+    def create(self, validated_data):
+        # Créer un nouvel utilisateur avec le mot de passe haché
+        password = validated_data.pop('password', None)
+        user = User(**validated_data)
+        if password:
+            user.set_password(password)
+        user.save()
+        return user
+        
+    def update(self, instance, validated_data):
+        # Mettre à jour les champs de base
+        instance.email = validated_data.get('email', instance.email)
+        instance.nom = validated_data.get('nom', instance.nom)
+        instance.prenom = validated_data.get('prenom', instance.prenom)
+        instance.telephone = validated_data.get('telephone', instance.telephone)
+        
+        # Mettre à jour le mot de passe si fourni
+        password = validated_data.get('password')
+        if password:
+            instance.set_password(password)
+            
+        instance.save()
+        return instance
 
 from .models import (
     Abonnement, Seance, Reservation, Paiement,
