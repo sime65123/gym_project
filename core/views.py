@@ -5,7 +5,7 @@ from django.db.models import Sum, Count, F
 from django.db.models.functions import TruncMonth
 from django.db import transaction
 
-from rest_framework import viewsets, filters, permissions, status, generics
+from rest_framework import viewsets, filters, permissions, status, generics, serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
@@ -177,24 +177,25 @@ class MeView(APIView):
         serializer = self.serializer_class(
             request.user, 
             data=request.data, 
-            partial=True
+            partial=True,
+            context={'request': request}  # Ajout du contexte pour le sérialiseur
         )
         
-        if not serializer.is_valid():
-            return Response(
-                {'errors': serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
         try:
+            if not serializer.is_valid():
+                return Response(
+                    {'errors': serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
             # Sauvegarder les modifications
             user = serializer.save()
             
             # Préparer la réponse
             response_data = self.serializer_class(user).data
             
-            # Si le mot de passe a été modifié, on peut vouloir renvoyer un nouveau token
-            if 'password' in request.data:
+            # Si un nouveau mot de passe a été fourni, on renvoie un nouveau token
+            if 'new_password' in request.data or 'password' in request.data:
                 from rest_framework_simplejwt.tokens import RefreshToken
                 refresh = RefreshToken.for_user(user)
                 response_data['tokens'] = {
@@ -204,12 +205,17 @@ class MeView(APIView):
             
             return Response(response_data)
             
+        except serializers.ValidationError as e:
+            return Response(
+                {'errors': e.detail},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
         except Exception as e:
             return Response(
                 {'error': str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        return Response(serializer.errors, status=400)
 
 
 # ---------- Gestion des Paiements ----------
@@ -561,6 +567,39 @@ class SeanceViewSet(viewsets.ModelViewSet):
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
+    def create_v2(self, request, *args, **kwargs):
+        print("=== DEBUG SEANCE CREATE ===")
+        print("Request data:", request.data)
+        print("Request user:", request.user)
+        response = super().create(request, *args, **kwargs)
+        print("Response data:", response.data)
+        return response
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            # Récupérer la séance à supprimer
+            seance = self.get_object()
+            
+            # Supprimer d'abord les réservations liées
+            seance.reservation_set.all().delete()
+            
+            # Supprimer les paiements liés
+            Paiement.objects.filter(seance=seance).delete()
+            
+            # Supprimer la séance
+            seance.delete()
+            
+            return Response(
+                {"detail": "La séance a été supprimée avec succès."},
+                status=status.HTTP_204_NO_CONTENT
+            )
+            
+        except Exception as e:
+            return Response(
+                {"detail": f"Une erreur est survenue lors de la suppression de la séance: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
     @action(detail=False, methods=['get'], permission_classes=[IsAdminOrEmploye])
     def coachs(self, request):
         coachs = Personnel.objects.filter(categorie='COACH')
@@ -595,11 +634,49 @@ class ReservationViewSet(viewsets.ModelViewSet):
             return Reservation.objects.filter(client=self.request.user)
         return Reservation.objects.all()
 
-    def perform_create(self, serializer):
+    def perform_create(self, request, *args, **kwargs):
         if self.request.user.role == 'CLIENT':
-            serializer.save(client=self.request.user)
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            self.perform_create(serializer)
         else:
-            serializer.save()
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            self.perform_create(serializer)
+
+    def perform_create_v2(self, request, *args, **kwargs):
+        # Récupérer le montant avant de sauvegarder la réservation
+        montant = self.get_serializer().validated_data.pop('montant', 0)
+        type_ticket = self.get_serializer().validated_data.get('type_ticket', 'SEANCE')
+        
+        # Sauvegarder la réservation avec le client connecté
+        reservation = self.get_serializer().save(
+            client=self.request.user,
+            montant_calcule=montant  # Sauvegarder également le montant dans la réservation
+        )
+        
+        # Créer automatiquement un paiement en attente pour cette réservation
+        paiement = Paiement.objects.create(
+            client=self.request.user,
+            reservation=reservation,
+            montant=montant,
+            mode_paiement='ESPECE',
+            status='EN_ATTENTE'
+        )
+        
+        # Générer le ticket PDF (billet de réservation)
+        try:
+            pdf_file = generer_facture_pdf(reservation, paiement, type_ticket=type_ticket)
+            ticket = Ticket.objects.create(
+                paiement=paiement,
+                fichier_pdf=pdf_file,
+                type_ticket=type_ticket
+            )
+            print(f"Ticket créé avec succès: {ticket.id} pour la réservation {reservation.id}")
+        except Exception as e:
+            print(f"Erreur lors de la création du ticket: {str(e)}")
+            raise
+>>>>>>> f54d897 (Sauvegarde des modifications locales avant mise à jour)
 
 
 class PaiementViewSet(viewsets.ModelViewSet):
@@ -690,11 +767,23 @@ class UserListView(generics.ListCreateAPIView):
     permission_classes = [IsAdminOrEmploye]
 
     def create(self, request, *args, **kwargs):
+        # Vérifier si l'utilisateur a la permission de créer un utilisateur avec ce rôle
+        role = request.data.get('role', 'CLIENT')
+        if role != 'CLIENT' and not request.user.is_superuser and request.user.role != 'ADMIN':
+            return Response(
+                {"detail": "Vous n'avez pas la permission de créer un utilisateur avec ce rôle."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
         # Utiliser le sérialiseur d'inscription pour la création
         serializer = UserRegisterSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
-            return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+            # Renvoyer les données de l'utilisateur créé
+            return Response(
+                UserSerializer(user).data, 
+                status=status.HTTP_201_CREATED
+            )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):

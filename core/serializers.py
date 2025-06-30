@@ -9,26 +9,31 @@ from django.conf import settings
 class UserRegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
     telephone = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    role = serializers.ChoiceField(choices=User.ROLE_CHOICES, default='CLIENT', required=False)
 
     class Meta:
         model = User
-        fields = ['email', 'nom', 'prenom', 'password', 'telephone']
+        fields = ['email', 'nom', 'prenom', 'password', 'telephone', 'role']
 
     def create(self, validated_data):
+        role = validated_data.pop('role', 'CLIENT')
         user = User.objects.create_user(
             email=validated_data['email'],
             password=validated_data['password'],
             nom=validated_data['nom'],
             prenom=validated_data['prenom'],
             telephone=validated_data.get('telephone', ''),
-            role='CLIENT'
+            role=role
         )
         return user
 
 class UserSerializer(serializers.ModelSerializer):
+    current_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    new_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    
     class Meta:
         model = User
-        fields = ['id', 'email', 'nom', 'prenom', 'telephone', 'role']
+        fields = ['id', 'email', 'nom', 'prenom', 'telephone', 'role', 'current_password', 'new_password']
         read_only_fields = ['id', 'role']
         extra_kwargs = {
             'password': {'write_only': True, 'required': False, 'allow_blank': True},
@@ -54,11 +59,25 @@ class UserSerializer(serializers.ModelSerializer):
         instance.prenom = validated_data.get('prenom', instance.prenom)
         instance.telephone = validated_data.get('telephone', instance.telephone)
         
-        # Mettre à jour le mot de passe si fourni
-        password = validated_data.get('password')
-        if password:
-            instance.set_password(password)
-            
+        # Gérer la mise à jour du mot de passe
+        current_password = validated_data.get('current_password')
+        new_password = validated_data.get('new_password') or validated_data.get('password')
+        
+        if new_password:
+            # Vérifier que l'ancien mot de passe est fourni et correct
+            if not current_password:
+                raise serializers.ValidationError({
+                    'current_password': 'Le mot de passe actuel est requis pour modifier le mot de passe.'
+                })
+                
+            if not instance.check_password(current_password):
+                raise serializers.ValidationError({
+                    'current_password': 'Le mot de passe actuel est incorrect.'
+                })
+                
+            # Définir le nouveau mot de passe
+            instance.set_password(new_password)
+        
         instance.save()
         return instance
 
@@ -106,11 +125,12 @@ class ReservationSerializer(serializers.ModelSerializer):
     client_nom = serializers.CharField(source='client.nom', read_only=True)
     client_prenom = serializers.CharField(source='client.prenom', read_only=True)
     seance_titre = serializers.CharField(source='seance.titre', read_only=True)
+    montant = serializers.DecimalField(max_digits=10, decimal_places=2, required=True, write_only=True)
 
     class Meta:
         model = Reservation
-        fields = ['id', 'client', 'client_nom', 'client_prenom', 'seance', 'seance_titre', 'date_reservation', 'statut', 'paye', 'date_heure_souhaitee', 'nombre_heures', 'montant_calcule', 'description']
-        read_only_fields = ['client', 'date_reservation']
+        fields = ['id', 'client', 'client_nom', 'client_prenom', 'seance', 'seance_titre', 'date_reservation', 'statut', 'paye', 'date_heure_souhaitee', 'nombre_heures', 'montant', 'montant_calcule', 'description']
+        read_only_fields = ['client', 'date_reservation', 'montant_calcule']
 
 class PaiementSerializer(serializers.ModelSerializer):
     client = serializers.StringRelatedField(read_only=True)
