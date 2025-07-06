@@ -5,7 +5,7 @@ from .views import (
     RegisterView, MeView,
     AbonnementViewSet, SeanceViewSet, ReservationViewSet,
     PaiementViewSet, TicketViewSet, ChargeViewSet, PresencePersonnelViewSet,
-    UserListView, UserDetailView, PersonnelViewSet,
+    UserListView, UserReservationsView, PersonnelViewSet,
     AbonnementClientPresentielViewSet, PaiementTrancheViewSet, AbonnementClientViewSet
 )
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -32,7 +32,7 @@ urlpatterns = [
     path('me/', MeView.as_view(), name='me'),
     path('financial-report/', FinancialReportView.as_view(), name='financial-report'),
     path('users/', UserListView.as_view(), name='user-list'),
-    path('users/<int:pk>/', UserDetailView.as_view(), name='user-detail'),
+    path('users/<int:user_id>/reservations/', UserReservationsView.as_view(), name='user-reservations'),
     path('valider-paiement/<int:paiement_id>/', ValiderPaiementView.as_view(), name='valider-paiement'),
     path('paiement-direct/', PaiementDirectView.as_view(), name='paiement-direct'),
     path('abonnement-direct/', AbonnementDirectView.as_view(), name='abonnement-direct'),

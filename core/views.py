@@ -51,98 +51,46 @@ class FinancialReportView(APIView):
         print(f"Query params: {request.query_params}")
 
         try:
-            # Période (par défaut: 12 derniers mois)
-            months = int(request.query_params.get('months', 12))
-            start_date = datetime.now() - timedelta(days=30 * months)
+            # Version simplifiée pour diagnostiquer
+            print("Test de base - comptage des objets...")
             
-            print(f"Période analysée: {start_date} à {datetime.now()}")
+            # Compter les objets de base
+            paiement_count = Paiement.objects.count()
+            charge_count = Charge.objects.count()
             
-            # Revenus totaux (paiements avec statut PAYE)
+            print(f"Nombre de paiements: {paiement_count}")
+            print(f"Nombre de charges: {charge_count}")
+            
+            # Test simple des revenus
+            print("Test des revenus...")
             total_revenue = Paiement.objects.filter(
                 status='PAYE'
             ).aggregate(total=Sum('montant'))['total'] or 0
             
             print(f"Revenus totaux: {total_revenue}")
             
-            # Dépenses totales
+            # Test simple des dépenses
+            print("Test des dépenses...")
             total_expenses = Charge.objects.aggregate(
                 total=Sum('montant')
             )['total'] or 0
             
             print(f"Dépenses totales: {total_expenses}")
             
-            # Profit
-            profit = total_revenue - total_expenses
-            
-            # Revenus mensuels
-            monthly_revenue = Paiement.objects.filter(
-                status='PAYE',
-                date_paiement__gte=start_date
-            ).annotate(
-                month=TruncMonth('date_paiement')
-            ).values('month').annotate(
-                total=Sum('montant')
-            ).order_by('month')
-            
-            print(f"Revenus mensuels: {list(monthly_revenue)}")
-            
-            # Dépenses mensuelles
-            monthly_expenses = Charge.objects.filter(
-                date__gte=start_date
-            ).annotate(
-                month=TruncMonth('date')
-            ).values('month').annotate(
-                total=Sum('montant')
-            ).order_by('month')
-            
-            print(f"Dépenses mensuelles: {list(monthly_expenses)}")
-            
-            # Statistiques des abonnements
-            subscription_stats = Paiement.objects.filter(
-                status='PAYE',
-                abonnement__isnull=False
-            ).values(
-                'abonnement__nom'
-            ).annotate(
-                count=Count('id'),
-                total=Sum('montant')
-            ).order_by('-total')
-            
-            # Statistiques des séances
-            session_stats = Paiement.objects.filter(
-                status='PAYE',
-                seance__isnull=False
-            ).values(
-                'seance__titre'
-            ).annotate(
-                count=Count('id'),
-                total=Sum('montant')
-            ).order_by('-total')
-            
-            # Nombre de clients actifs (ayant effectué un paiement dans la période)
-            active_clients = Paiement.objects.filter(
-                status='PAYE',
-                date_paiement__gte=start_date
-            ).values('client').distinct().count()
-            
-            print(f"Nombre de clients actifs: {active_clients}")
-            
+            # Réponse simplifiée
             response_data = {
-                'summary': {
-                    'total_revenue': total_revenue,
-                    'total_expenses': total_expenses,
-                    'profit': profit,
-                    'active_clients': active_clients
-                },
-                'monthly': {
-                    'revenue': list(monthly_revenue),
-                    'expenses': list(monthly_expenses)
-                },
-                'subscriptions': list(subscription_stats),
-                'sessions': list(session_stats)
+                'total_revenue': total_revenue,
+                'total_expenses': total_expenses,
+                'total_charges': total_expenses,
+                'profit': total_revenue - total_expenses,
+                'active_clients': 0,  # Simplifié pour l'instant
+                'monthly_stats': [],  # Simplifié pour l'instant
+                'subscription_stats': [],  # Simplifié pour l'instant
+                'session_stats': []  # Simplifié pour l'instant
             }
             
             print("Réponse finale:", response_data)
+            print("Taille de la réponse:", len(str(response_data)))
             
             return Response(response_data)
             
@@ -150,8 +98,16 @@ class FinancialReportView(APIView):
             print(f"Erreur dans FinancialReportView: {str(e)}")
             import traceback
             traceback.print_exc()
+            
+            # Retourner une réponse d'erreur plus détaillée
+            error_response = {
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'message': 'Une erreur est survenue lors de la génération du rapport financier'
+            }
+            
             return Response(
-                {'error': str(e)},
+                error_response,
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -530,12 +486,21 @@ class AbonnementViewSet(viewsets.ModelViewSet):
     serializer_class = AbonnementSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ['nom']
-    permission_classes = [IsAdminOrEmploye]
+    permission_classes = [IsAdminOrEmploye | IsClient]  # Permettre aux clients de lire
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'destroy']:
-            return [IsAdmin()]
-        return [IsAdminOrEmploye()]
+            return [IsAdmin()]  # Seul l'admin peut créer/modifier/supprimer
+        # Pour la lecture, on autorise admin, employé et client
+        return [permission() for permission in self.permission_classes]
+        
+    def create(self, request, *args, **kwargs):
+        print("Données reçues pour la création d'un abonnement:", request.data)
+        try:
+            return super().create(request, *args, **kwargs)
+        except Exception as e:
+            print("Erreur lors de la création de l'abonnement:", str(e))
+            raise
 
     @action(detail=True, methods=['get'], permission_classes=[IsAdminOrEmploye])
     def clients(self, request, pk=None):
@@ -557,11 +522,26 @@ class SeanceViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'destroy']:
-            return [IsEmploye()]
+            return [IsAdminOrEmploye()]
         return [IsAdminOrEmploye()]
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
+        data = request.data.copy()
+        
+        # Vérifier si un coach_id est fourni et le convertir en entier
+        coach_id = data.get('coach_id')
+        if coach_id and coach_id != '':
+            try:
+                data['coach'] = int(coach_id)
+            except (ValueError, TypeError):
+                return Response(
+                    {"error": "Le champ coach doit être un identifiant valide ou null"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            data['coach'] = None
+            
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
@@ -575,6 +555,122 @@ class SeanceViewSet(viewsets.ModelViewSet):
         print("Response data:", response.data)
         return response
 
+    def update(self, request, *args, **kwargs):
+        """Permet à un employé de modifier une séance"""
+        try:
+            print("=== DEBUG SEANCE UPDATE ===")
+            print("Request data:", request.data)
+            print("Request user:", request.user)
+            print("User role:", getattr(request.user, 'role', 'Non défini'))
+            
+            # Vérifier les permissions
+            if not request.user.is_authenticated:
+                return Response(
+                    {'error': 'Authentication required'},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            if request.user.role not in ['ADMIN', 'EMPLOYE']:
+                return Response(
+                    {'error': 'Permission denied. Only admins and employees can modify sessions.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Récupérer la séance à modifier
+            seance = self.get_object()
+            print(f"Modifying session: {seance.id} - {seance.client_prenom} {seance.client_nom}")
+            
+            # Préparer les données
+            data = request.data.copy()
+            print("Original data:", data)
+            
+            # Nettoyer et valider les données
+            cleaned_data = {}
+            
+            # Champs de base
+            if 'client_nom' in data:
+                cleaned_data['client_nom'] = data['client_nom']
+            if 'client_prenom' in data:
+                cleaned_data['client_prenom'] = data['client_prenom']
+            if 'date_jour' in data:
+                cleaned_data['date_jour'] = data['date_jour']
+            
+            # Champs numériques
+            if 'nombre_heures' in data:
+                try:
+                    cleaned_data['nombre_heures'] = int(data['nombre_heures'])
+                except (ValueError, TypeError):
+                    return Response(
+                        {"error": "Le nombre d'heures doit être un nombre entier valide"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            
+            if 'montant_paye' in data:
+                try:
+                    cleaned_data['montant_paye'] = float(data['montant_paye'])
+                except (ValueError, TypeError):
+                    return Response(
+                        {"error": "Le montant payé doit être un nombre valide"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            
+            # Gestion du coach
+            coach_id = data.get('coach_id')
+            if coach_id is not None and coach_id != '' and coach_id != 'none' and coach_id != 0:
+                try:
+                    coach_id_int = int(coach_id)
+                    # Vérifier que le coach existe
+                    from .models import Personnel
+                    coach = Personnel.objects.filter(id=coach_id_int, categorie='COACH').first()
+                    if coach:
+                        cleaned_data['coach'] = coach
+                    else:
+                        return Response(
+                            {"error": f"Coach avec l'ID {coach_id_int} non trouvé"},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                except (ValueError, TypeError):
+                    return Response(
+                        {"error": "Le champ coach_id doit être un identifiant valide"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            else:
+                cleaned_data['coach'] = None
+            
+            print("Cleaned data:", cleaned_data)
+            
+            # Valider et sauvegarder les modifications
+            serializer = self.get_serializer(seance, data=cleaned_data, partial=kwargs.get('partial', False))
+            
+            if not serializer.is_valid():
+                print("Validation errors:", serializer.errors)
+                return Response(
+                    {"error": "Données invalides", "details": serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            self.perform_update(serializer)
+            
+            print("Session updated successfully")
+            return Response(serializer.data)
+            
+        except Exception as e:
+            print("=== ERROR IN SEANCE UPDATE ===")
+            print("Error type:", type(e))
+            print("Error message:", str(e))
+            import traceback
+            print("Traceback:", traceback.format_exc())
+            
+            return Response(
+                {"error": f"Erreur lors de la modification de la séance: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def partial_update(self, request, *args, **kwargs):
+        """Permet à un employé de modifier partiellement une séance"""
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
+
     def destroy(self, request, *args, **kwargs):
         try:
             # Récupérer la séance à supprimer
@@ -583,36 +679,29 @@ class SeanceViewSet(viewsets.ModelViewSet):
             # Supprimer d'abord les réservations liées
             seance.reservation_set.all().delete()
             
-            # Supprimer les paiements liés
-            Paiement.objects.filter(seance=seance).delete()
-            
-            # Supprimer la séance
+            # Puis supprimer la séance elle-même
             seance.delete()
             
             return Response(
-                {"detail": "La séance a été supprimée avec succès."},
+                {"message": "Séance et réservations associées supprimées avec succès"},
                 status=status.HTTP_204_NO_CONTENT
             )
-            
         except Exception as e:
             return Response(
-                {"detail": f"Une erreur est survenue lors de la suppression de la séance: {str(e)}"},
+                {"error": f"Erreur lors de la suppression de la séance: {str(e)}"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-    @action(detail=False, methods=['get'], permission_classes=[IsAdminOrEmploye])
+    @action(detail=False, methods=['get'])
     def coachs(self, request):
-        coachs = Personnel.objects.filter(categorie='COACH')
-        serializer = PersonnelSerializer(coachs, many=True)
+        coachs = User.objects.filter(role='COACH')
+        serializer = UserSerializer(coachs, many=True)
         return Response(serializer.data)
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAdminOrEmploye])
+    @action(detail=True, methods=['get'])
     def participants(self, request, pk=None):
         seance = self.get_object()
-        participants = User.objects.filter(
-            reservation__seance=seance,
-            reservation__statut='CONFIRMEE'
-        ).distinct()
+        participants = seance.participants.all()
         serializer = UserSerializer(participants, many=True)
         return Response(serializer.data)
 
@@ -621,28 +710,262 @@ class ReservationViewSet(viewsets.ModelViewSet):
     queryset = Reservation.objects.all()
     serializer_class = ReservationSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ['client', 'seance', 'statut']
-    permission_classes = [IsAdminOrEmploye]
+    filterset_fields = ['nom_client', 'type_reservation', 'statut']
+    permission_classes = [IsAdminOrEmploye | IsClient]  
 
     def get_permissions(self):
-        if self.action in ['create', 'update', 'destroy']:
-            return [IsEmploye()]
-        return [IsAdminOrEmploye()]
+        if self.action in ['create_v2', 'create']:
+            return [IsClient()]
+        # Pour les autres actions, utiliser les permissions définies dans permission_classes
+        return [permission() for permission in self.permission_classes]
 
     def get_queryset(self):
-        if self.request.user.role == 'CLIENT':
-            return Reservation.objects.filter(client=self.request.user)
-        return Reservation.objects.all()
+        user = self.request.user
+        if user.is_authenticated and user.role == 'CLIENT':
+            # Les clients ne voient que leurs propres réservations
+            client_name = f"{user.prenom} {user.nom}"
+            return Reservation.objects.filter(nom_client=client_name)
+        elif user.is_authenticated and user.role in ['ADMIN', 'EMPLOYE']:
+            # Les admins et employés voient toutes les réservations
+            return super().get_queryset()
+        return Reservation.objects.none()
+        
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
 
-    def perform_create(self, request, *args, **kwargs):
-        if self.request.user.role == 'CLIENT':
-            serializer = self.get_serializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
-            self.perform_create(serializer)
-        else:
-            serializer = self.get_serializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
-            self.perform_create(serializer)
+    @action(detail=True, methods=['post'], permission_classes=[IsEmploye])
+    def valider(self, request, pk=None):
+        """Permet à un employé de valider une réservation et créer un paiement"""
+        try:
+            reservation = self.get_object()
+            
+            # Vérifier que la réservation est en attente
+            if reservation.statut != 'EN_ATTENTE':
+                return Response(
+                    {'error': 'Cette réservation ne peut plus être validée'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Récupérer le montant saisi par l'employé
+            montant = request.data.get('montant')
+            if not montant or float(montant) <= 0:
+                return Response(
+                    {'error': 'Le montant doit être supérieur à 0'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Calculer le montant total déjà payé pour cette réservation
+            from django.db.models import Sum
+            montant_total_paye = Paiement.objects.filter(
+                reservation=reservation,
+                status='PAYE'
+            ).aggregate(total=Sum('montant'))['total'] or 0
+            
+            # Convertir en float pour éviter les problèmes de type
+            montant_total_paye = float(montant_total_paye) if montant_total_paye else 0.0
+            
+            # Vérification spécifique pour les abonnements
+            if reservation.type_reservation == 'ABONNEMENT':
+                # On tente de retrouver l'abonnement par le nom dans la description
+                from .models import Abonnement
+                try:
+                    print(f"=== DEBUG VALIDATION ABONNEMENT ===")
+                    print(f"Description de la réservation: {reservation.description}")
+                    print(f"Montant de la réservation: {reservation.montant}")
+                    print(f"Montant saisi: {montant}")
+                    print(f"Montant total déjà payé: {montant_total_paye}")
+                    
+                    # On suppose que la description contient le nom de l'abonnement (ex: 'Abonnement Gold - ...')
+                    nom_abonnement = None
+                    if reservation.description:
+                        # Cherche le mot après 'Abonnement' dans la description
+                        import re
+                        match = re.search(r'Abonnement\s+([\w\- ]+)', reservation.description)
+                        if match:
+                            nom_abonnement = match.group(1).strip()
+                            print(f"Nom d'abonnement trouvé: {nom_abonnement}")
+                    
+                    # Si on ne trouve pas le nom dans la description, on utilise le montant de la réservation
+                    if not nom_abonnement:
+                        print("Nom d'abonnement non trouvé dans la description, utilisation du montant de la réservation")
+                        # On va chercher un abonnement avec un prix proche du montant de la réservation
+                        abonnement = Abonnement.objects.filter(
+                            prix__gte=reservation.montant * 0.9,  # 10% de tolérance
+                            prix__lte=reservation.montant * 1.1
+                        ).first()
+                    else:
+                        abonnement = Abonnement.objects.filter(nom__icontains=nom_abonnement).first()
+                    
+                    if not abonnement:
+                        print("Aucun abonnement trouvé, utilisation du montant de la réservation comme référence")
+                        # Si on ne trouve pas d'abonnement, on utilise le montant de la réservation comme référence
+                        montant_reference = reservation.montant if reservation.montant > 0 else 5000  # Valeur par défaut
+                    else:
+                        print(f"Abonnement trouvé: {abonnement.nom} - Prix: {abonnement.prix}")
+                        montant_reference = float(abonnement.prix)
+                        # Mettre à jour le montant de la réservation si c'est le premier paiement
+                        if montant_total_paye == 0:
+                            reservation.montant = montant_reference
+                            reservation.save()
+                            print(f"Montant de la réservation mis à jour: {reservation.montant}")
+                    
+                    # Vérifier que le montant total payé ne dépasse pas le montant de référence
+                    montant_total_apres_paiement = montant_total_paye + float(montant)
+                    if montant_total_apres_paiement > float(montant_reference):
+                        return Response(
+                            {'error': f'Le montant total payé ({montant_total_apres_paiement} FCFA) ne peut pas dépasser le montant de référence ({montant_reference} FCFA)'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    
+                    print(f"Validation OK - Montant total après paiement: {montant_total_apres_paiement}")
+                    
+                except Exception as e:
+                    print(f"Erreur lors de la vérification du montant de l'abonnement: {str(e)}")
+                    return Response({'error': f'Erreur lors de la vérification du montant de l\'abonnement: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Créer un paiement pour cette réservation
+            paiement = Paiement.objects.create(
+                client=None,  # Pas de client spécifique pour les réservations
+                reservation=reservation,
+                montant=float(montant),
+                status='PAYE',
+                mode_paiement='ESPECE'
+            )
+            
+            # Calculer le nouveau montant total payé
+            nouveau_montant_total_paye = montant_total_paye + float(montant)
+            
+            # Pour les abonnements, vérifier si le paiement est complet
+            if reservation.type_reservation == 'ABONNEMENT':
+                if nouveau_montant_total_paye >= float(reservation.montant):
+                    # Paiement complet, confirmer la réservation
+                    reservation.statut = 'CONFIRMEE'
+                    reservation.save()
+                    
+                    # Générer le ticket PDF
+                    try:
+                        pdf_file = generer_facture_pdf(reservation, paiement, type_ticket=reservation.type_reservation)
+                        ticket = Ticket.objects.create(
+                            paiement=paiement,
+                            fichier_pdf=pdf_file,
+                            type_ticket=reservation.type_reservation
+                        )
+                        print(f"Ticket créé avec succès: {ticket.id} pour la réservation {reservation.id}")
+                    except Exception as e:
+                        print(f"Erreur lors de la création du ticket: {str(e)}")
+                        # Ne pas lever l'exception pour ne pas bloquer la validation
+                    
+                    return Response({
+                        'message': 'Réservation confirmée avec succès - Paiement complet',
+                        'paiement_id': paiement.id,
+                        'montant': str(paiement.montant),
+                        'montant_total_paye': str(nouveau_montant_total_paye),
+                        'montant_abonnement': str(reservation.montant),
+                        'ticket_url': ticket.fichier_pdf.url if 'ticket' in locals() else None
+                    }, status=status.HTTP_200_OK)
+                else:
+                    # Paiement partiel, garder en attente
+                    return Response({
+                        'message': 'Paiement partiel enregistré - Réservation en attente',
+                        'paiement_id': paiement.id,
+                        'montant': str(paiement.montant),
+                        'montant_total_paye': str(nouveau_montant_total_paye),
+                        'montant_abonnement': str(reservation.montant),
+                        'reste_a_payer': str(float(reservation.montant) - nouveau_montant_total_paye)
+                    }, status=status.HTTP_200_OK)
+            else:
+                # Pour les séances, validation immédiate
+                reservation.statut = 'CONFIRMEE'
+                reservation.save()
+                
+                # Générer le ticket PDF
+                try:
+                    pdf_file = generer_facture_pdf(reservation, paiement, type_ticket=reservation.type_reservation)
+                    ticket = Ticket.objects.create(
+                        paiement=paiement,
+                        fichier_pdf=pdf_file,
+                        type_ticket=reservation.type_reservation
+                    )
+                    print(f"Ticket créé avec succès: {ticket.id} pour la réservation {reservation.id}")
+                except Exception as e:
+                    print(f"Erreur lors de la création du ticket: {str(e)}")
+                    # Ne pas lever l'exception pour ne pas bloquer la validation
+                
+                return Response({
+                    'message': 'Réservation validée avec succès',
+                    'paiement_id': paiement.id,
+                    'montant': str(paiement.montant),
+                    'ticket_url': ticket.fichier_pdf.url if 'ticket' in locals() else None
+                }, status=status.HTTP_200_OK)
+            
+        except Reservation.DoesNotExist:
+            return Response(
+                {'error': 'Réservation introuvable'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Erreur lors de la validation: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )  
+
+    def create(self, request, *args, **kwargs):
+        # Vérifier si l'utilisateur est authentifié
+        if not request.user.is_authenticated:
+            return Response(
+                {'detail': 'Authentication credentials were not provided.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+            
+        # Ajouter le nom du client connecté à la réservation
+        data = request.data.copy()
+        data['nom_client'] = f"{request.user.prenom} {request.user.nom}"
+        
+        # Valider et sauvegarder la réservation
+        serializer = self.get_serializer(data=data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        
+        # Retourner la réponse avec les données de la réservation créée
+        headers = self.get_success_headers(serializer.data)
+        return Response(
+            serializer.data,
+            status=status.HTTP_201_CREATED,
+            headers=headers
+        )
+        
+    def perform_create(self, serializer):
+        # Sauvegarder la réservation
+        reservation = serializer.save()
+        
+        # Créer automatiquement un paiement en attente pour cette réservation
+        try:
+            paiement = Paiement.objects.create(
+                client=self.request.user if self.request.user.is_authenticated else None,
+                reservation=reservation,
+                montant=reservation.montant,
+                mode_paiement='ESPECE',
+                status='EN_ATTENTE'
+            )
+            
+            # Générer le ticket PDF
+            try:
+                pdf_file = generer_facture_pdf(reservation, paiement, type_ticket=reservation.type_reservation)
+                ticket = Ticket.objects.create(
+                    paiement=paiement,
+                    fichier_pdf=pdf_file,
+                    type_ticket=reservation.type_reservation
+                )
+                print(f"Ticket créé avec succès: {ticket.id} pour la réservation {reservation.id}")
+            except Exception as e:
+                print(f"Erreur lors de la création du ticket: {str(e)}")
+                # Ne pas lever l'exception pour ne pas bloquer la création de la réservation
+                
+        except Exception as e:
+            print(f"Erreur lors de la création du paiement: {str(e)}")
+            # Ne pas lever l'exception pour ne pas bloquer la création de la réservation
 
     def perform_create_v2(self, request, *args, **kwargs):
         # Récupérer le montant avant de sauvegarder la réservation
@@ -676,42 +999,105 @@ class ReservationViewSet(viewsets.ModelViewSet):
         except Exception as e:
             print(f"Erreur lors de la création du ticket: {str(e)}")
             raise
->>>>>>> f54d897 (Sauvegarde des modifications locales avant mise à jour)
 
+    def destroy(self, request, *args, **kwargs):
+        """Permet aux clients de supprimer leurs réservations en attente"""
+        try:
+            print(f"[DEBUG] Tentative de suppression de réservation - ID: {kwargs.get('pk')}")
+            print(f"[DEBUG] Utilisateur: {request.user}")
+            print(f"[DEBUG] Rôle: {getattr(request.user, 'role', 'Non défini')}")
+            
+            reservation = self.get_object()
+            print(f"[DEBUG] Réservation trouvée: {reservation.id} - Statut: {reservation.statut}")
+            
+            # Vérifier que l'utilisateur est le propriétaire de la réservation
+            if request.user.role == 'CLIENT':
+                client_name = f"{request.user.prenom} {request.user.nom}"
+                print(f"[DEBUG] Nom client attendu: {client_name}")
+                print(f"[DEBUG] Nom client réservation: {reservation.nom_client}")
+                
+                if reservation.nom_client != client_name:
+                    print(f"[DEBUG] Erreur: nom client ne correspond pas")
+                    return Response(
+                        {'error': 'Vous ne pouvez supprimer que vos propres réservations'},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+                
+                # Vérifier que la réservation est en attente
+                if reservation.statut != 'EN_ATTENTE':
+                    print(f"[DEBUG] Erreur: réservation pas en attente")
+                    return Response(
+                        {'error': 'Vous ne pouvez supprimer que les réservations en attente'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            
+            # Supprimer la réservation
+            print(f"[DEBUG] Suppression de la réservation {reservation.id}")
+            reservation.delete()
+            print(f"[DEBUG] Réservation supprimée avec succès")
+            
+            return Response(
+                {'message': 'Réservation supprimée avec succès'},
+                status=status.HTTP_204_NO_CONTENT
+            )
+            
+        except Reservation.DoesNotExist:
+            print(f"[DEBUG] Réservation introuvable")
+            return Response(
+                {'error': 'Réservation introuvable'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            print(f"[DEBUG] Erreur lors de la suppression: {str(e)}")
+            return Response(
+                {'error': f'Erreur lors de la suppression: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class PaiementViewSet(viewsets.ModelViewSet):
     queryset = Paiement.objects.all()
     serializer_class = PaiementSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['client', 'abonnement', 'seance', 'status']
-    permission_classes = [IsAdminOrEmploye]
+    permission_classes = [IsAdminOrEmploye | IsClient]  # Permettre aux clients de lire
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'destroy']:
-            return [IsEmploye()]
-        return [IsAdminOrEmploye()]
+            return [IsAdmin()]  # Seul l'admin peut créer/modifier/supprimer
+        # Pour la lecture, on autorise admin, employé et client
+        return [permission() for permission in self.permission_classes]
 
     def get_queryset(self):
-        if self.request.user.role == 'CLIENT':
-            return Paiement.objects.filter(client=self.request.user)
-        return Paiement.objects.all()
+        user = self.request.user
+        if user.is_authenticated and user.role == 'CLIENT':
+            # Les clients ne voient que leurs propres paiements
+            return Paiement.objects.filter(client=user)
+        elif user.is_authenticated and user.role in ['ADMIN', 'EMPLOYE']:
+            # Les admins et employés voient tous les paiements
+            return super().get_queryset()
+        return Paiement.objects.none()  # Aucun résultat si non authentifié
 
 
 class TicketViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Ticket.objects.all()
-    # Il faudra créer TicketSerializer
     serializer_class = TicketSerializer
-    permission_classes = [IsAdminOrEmploye]
+    permission_classes = [IsAdminOrEmploye | IsClient]  # Permettre aux clients de lire
 
     def get_permissions(self):
         if self.action in ['create', 'update', 'destroy']:
-            return [IsEmploye()]
-        return [IsAdminOrEmploye()]
+            return [IsAdmin()]  # Seul l'admin peut créer/modifier/supprimer
+        # Pour la lecture, on autorise admin, employé et client
+        return [permission() for permission in self.permission_classes]
 
     def get_queryset(self):
-        if self.request.user.role == 'CLIENT':
-            return Ticket.objects.filter(paiement__client=self.request.user)
-        return Ticket.objects.all()
+        user = self.request.user
+        if user.is_authenticated and user.role == 'CLIENT':
+            # Les clients ne voient que leurs propres tickets
+            return Ticket.objects.filter(paiement__client=user)
+        elif user.is_authenticated and user.role in ['ADMIN', 'EMPLOYE']:
+            # Les admins et employés voient tous les tickets
+            return super().get_queryset().order_by('-id')  # Tri par ID décroissant
+        return Ticket.objects.none()  # Aucun résultat si non authentifié
 
 
 class ChargeViewSet(viewsets.ModelViewSet):
@@ -720,8 +1106,9 @@ class ChargeViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrEmploye]
 
     def get_permissions(self):
+        # Permettre aux admins et employés de créer/modifier/supprimer
         if self.action in ['create', 'update', 'destroy']:
-            return [IsAdmin()]
+            return [IsAdminOrEmploye()]
         return [IsAdminOrEmploye()]
 
 
@@ -786,10 +1173,53 @@ class UserListView(generics.ListCreateAPIView):
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = User.objects.all()
-    serializer_class = UserSerializer
+class UserReservationsView(APIView):
     permission_classes = [IsAdmin]
+
+    def get(self, request, user_id):
+        """Récupérer toutes les réservations confirmées d'un client spécifique"""
+        try:
+            user = User.objects.get(id=user_id)
+            
+            # Vérifier que l'utilisateur est un client
+            if user.role != 'CLIENT':
+                return Response(
+                    {'error': 'Cet utilisateur n\'est pas un client'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Récupérer les réservations confirmées du client
+            client_name = f"{user.prenom} {user.nom}"
+            reservations = Reservation.objects.filter(
+                nom_client=client_name,
+                statut='CONFIRMEE'
+            ).order_by('-created_at')
+            
+            # Sérialiser les réservations
+            from .serializers import ReservationSerializer
+            serializer = ReservationSerializer(reservations, many=True)
+            
+            return Response({
+                'client': {
+                    'id': user.id,
+                    'nom': user.nom,
+                    'prenom': user.prenom,
+                    'email': user.email
+                },
+                'reservations': serializer.data,
+                'total_reservations': reservations.count()
+            })
+            
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'Utilisateur introuvable'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Erreur lors de la récupération des réservations: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class SeanceDirecteView(APIView):
     permission_classes = [IsEmploye]
@@ -953,7 +1383,19 @@ class AbonnementClientReservationView(APIView):
 class AbonnementClientViewSet(viewsets.ModelViewSet):
     queryset = AbonnementClient.objects.all()
     serializer_class = AbonnementClientSerializer
-    permission_classes = [IsAdminOrEmploye]
+    permission_classes = [IsAdminOrEmploye | IsClient]  # Permettre aux clients de lire
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['client', 'abonnement', 'actif']
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_authenticated and user.role == 'CLIENT':
+            # Les clients ne voient que leurs propres abonnements
+            return AbonnementClient.objects.filter(client=user)
+        elif user.is_authenticated and user.role in ['ADMIN', 'EMPLOYE']:
+            # Les admins et employés voient tous les abonnements
+            return super().get_queryset()
+        return AbonnementClient.objects.none()  # Aucun résultat si non authentifié
 
 class LoginView(TokenObtainPairView):
     serializer_class = MyTokenObtainPairSerializer

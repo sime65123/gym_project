@@ -79,32 +79,79 @@ class Seance(models.Model):
     date_jour = models.DateField(default=timezone.now)
     nombre_heures = models.PositiveIntegerField(default=1)
     montant_paye = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    coach = models.ForeignKey(
+        'Personnel',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        limit_choices_to={'categorie': 'COACH'},
+        verbose_name='Coach'
+    )
 
     def __str__(self):
         return f"{self.client_prenom} {self.client_nom} - {self.date_jour} ({self.nombre_heures}h) - {self.montant_paye} FCFA"
 
 
 class Reservation(models.Model):
-    client = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'CLIENT'})
-    seance = models.ForeignKey(Seance, on_delete=models.CASCADE, null=True, blank=True)  # Optionnel maintenant
-    date_reservation = models.DateTimeField(auto_now_add=True)
-    statut = models.CharField(max_length=20, choices=[('EN_ATTENTE', 'En attente'), ('CONFIRMEE', 'Confirmée'), ('ANNULEE', 'Annulée')], default='EN_ATTENTE')
-    paye = models.BooleanField(default=False)  # True si le client a payé à la salle
-    # Nouveaux champs pour la réservation côté client
-    date_heure_souhaitee = models.DateTimeField(null=True, blank=True)  # Heure souhaitée par le client
-    nombre_heures = models.PositiveIntegerField(default=1)  # Nombre d'heures réservées
-    montant_calcule = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)  # Montant calculé selon les heures
-    description = models.TextField(blank=True)  # Description/commentaire du client
+    TYPE_CHOICES = [
+        ('SEANCE', 'Séance'),
+        ('ABONNEMENT', 'Abonnement'),
+    ]
+    
+    STATUT_CHOICES = [
+        ('EN_ATTENTE', 'En attente'),
+        ('CONFIRMEE', 'Confirmée'),
+        ('ANNULEE', 'Annulée'),
+        ('TERMINEE', 'Terminée'),
+    ]
+    
+    nom_client = models.CharField(max_length=255, verbose_name='Nom du client')
+    type_reservation = models.CharField(
+        max_length=20, 
+        choices=TYPE_CHOICES,
+        verbose_name='Type de réservation'
+    )
+    montant = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        verbose_name='Montant'
+    )
+    montant_paye = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        default=0,
+        verbose_name='Montant payé'
+    )
+    statut = models.CharField(
+        max_length=20, 
+        choices=STATUT_CHOICES, 
+        default='EN_ATTENTE',
+        verbose_name='Statut'
+    )
+    description = models.TextField(
+        blank=True, 
+        null=True,
+        verbose_name='Description'
+    )
+    created_at = models.DateTimeField(default=timezone.now, verbose_name='Date de création')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Date de modification')
 
     def __str__(self):
-        if self.seance:
-            return f"Réservation - {self.client} / {self.seance}"
-        else:
-            return f"Réservation - {self.client} / {self.date_heure_souhaitee} ({self.nombre_heures}h)"
+        return f"{self.nom_client} - {self.get_type_reservation_display()} - {self.montant} FCFA"
+
+    class Meta:
+        verbose_name = 'Réservation'
+        verbose_name_plural = 'Réservations'
 
 
 class Paiement(models.Model):
-    client = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'CLIENT'}, null=True, blank=True)
+    client = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE, 
+        limit_choices_to={'role': 'CLIENT'}, 
+        null=True, 
+        blank=True
+    )
     abonnement = models.ForeignKey(Abonnement, on_delete=models.SET_NULL, null=True, blank=True)
     seance = models.ForeignKey(Seance, on_delete=models.SET_NULL, null=True, blank=True)
     reservation = models.ForeignKey(Reservation, on_delete=models.SET_NULL, null=True, blank=True)

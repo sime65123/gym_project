@@ -61,7 +61,7 @@ class UserSerializer(serializers.ModelSerializer):
         
         # Gérer la mise à jour du mot de passe
         current_password = validated_data.get('current_password')
-        new_password = validated_data.get('new_password') or validated_data.get('password')
+        new_password = validated_data.get('new_password')
         
         if new_password:
             # Vérifier que l'ancien mot de passe est fourni et correct
@@ -96,16 +96,31 @@ class PersonnelSerializer(serializers.ModelSerializer):
         model = Personnel
         fields = '__all__'
 
+class PersonnelSimpleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Personnel
+        fields = ['id', 'nom', 'prenom', 'categorie']
+        read_only_fields = ['id', 'nom', 'prenom', 'categorie']
+
 class SeanceSerializer(serializers.ModelSerializer):
     ticket_url = serializers.SerializerMethodField()
+    coach = PersonnelSimpleSerializer(read_only=True)
+    coach_id = serializers.PrimaryKeyRelatedField(
+        queryset=Personnel.objects.filter(categorie='COACH'),
+        source='coach',
+        write_only=True,
+        required=False,
+        allow_null=True
+    )
     
     class Meta:
         model = Seance
         fields = [
             'id', 'client_nom', 'client_prenom', 'date_jour', 'nombre_heures', 'montant_paye',
-            'ticket_url'
+            'ticket_url', 'coach', 'coach_id'
         ]
-    
+        read_only_fields = ['id', 'ticket_url']
+        
     def get_ticket_url(self, obj):
         try:
             paiement = obj.paiement_set.first()
@@ -121,16 +136,65 @@ class SeanceSerializer(serializers.ModelSerializer):
         return None
 
 class ReservationSerializer(serializers.ModelSerializer):
-    client = serializers.StringRelatedField(read_only=True)
-    client_nom = serializers.CharField(source='client.nom', read_only=True)
-    client_prenom = serializers.CharField(source='client.prenom', read_only=True)
-    seance_titre = serializers.CharField(source='seance.titre', read_only=True)
-    montant = serializers.DecimalField(max_digits=10, decimal_places=2, required=True, write_only=True)
-
+    ticket_url = serializers.SerializerMethodField()
+    montant_total_paye = serializers.SerializerMethodField()
+    
     class Meta:
         model = Reservation
-        fields = ['id', 'client', 'client_nom', 'client_prenom', 'seance', 'seance_titre', 'date_reservation', 'statut', 'paye', 'date_heure_souhaitee', 'nombre_heures', 'montant', 'montant_calcule', 'description']
-        read_only_fields = ['client', 'date_reservation', 'montant_calcule']
+        fields = [
+            'id', 'nom_client', 'type_reservation', 'montant', 'montant_total_paye', 'statut', 'description', 
+            'created_at', 'updated_at', 'ticket_url'
+        ]
+        read_only_fields = ['id', 'statut', 'ticket_url', 'created_at', 'updated_at', 'montant_total_paye']
+        
+    def get_ticket_url(self, obj):
+        try:
+            # Chercher le ticket associé à cette réservation via le paiement
+            paiement = Paiement.objects.filter(reservation=obj).first()
+            if paiement and hasattr(paiement, 'ticket') and paiement.ticket:
+                request = self.context.get('request')
+                url = paiement.ticket.fichier_pdf.url
+                if request is not None:
+                    return request.build_absolute_uri(url)
+                # fallback
+                return f"{settings.MEDIA_URL}{url}"
+        except:
+            pass
+        return None
+    
+    def get_montant_total_paye(self, obj):
+        """Calcule le montant total payé pour cette réservation"""
+        from django.db.models import Sum
+        try:
+            total = Paiement.objects.filter(
+                reservation=obj,
+                status='PAYE'
+            ).aggregate(total=Sum('montant'))['total'] or 0
+            return str(float(total)) if total else "0"
+        except Exception as e:
+            print(f"Erreur dans get_montant_total_paye: {e}")
+            return "0"
+        
+    def validate(self, data):
+        # Vérifier que les champs requis sont présents
+        required_fields = ['nom_client', 'type_reservation', 'montant']
+        for field in required_fields:
+            if field not in data:
+                raise serializers.ValidationError({field: 'Ce champ est obligatoire.'})
+                
+        # Valider le type de réservation
+        if data['type_reservation'] not in dict(Reservation.TYPE_CHOICES):
+            raise serializers.ValidationError({
+                'type_reservation': f"Le type de réservation doit être l'un des suivants: {', '.join(dict(Reservation.TYPE_CHOICES).keys())}"
+            })
+            
+        # Valider que le montant est positif ou zéro (pour les réservations en attente)
+        if data['montant'] < 0:
+            raise serializers.ValidationError({
+                'montant': 'Le montant ne peut pas être négatif.'
+            })
+            
+        return data
 
 class PaiementSerializer(serializers.ModelSerializer):
     client = serializers.StringRelatedField(read_only=True)
@@ -182,12 +246,31 @@ class PresencePersonnelSerializer(serializers.ModelSerializer):
         fields = ['id', 'personnel', 'personnel_id', 'employe', 'employe_id', 'statut', 'heure_arrivee', 'date_jour']
 
     def validate(self, data):
+        print("=== DEBUG VALIDATION ===")
+        print("Data received:", data)
+        
+        # Vérifier qu'au moins un personnel ou employé est spécifié
+        if not data.get('personnel') and not data.get('employe'):
+            # Si aucun n'est spécifié, on va utiliser l'utilisateur connecté dans create()
+            print("No personnel or employe specified, will use current user")
+        
+        # Vérifier que date_jour est fourni
+        if not data.get('date_jour'):
+            raise serializers.ValidationError({
+                'date_jour': 'La date du jour est obligatoire.'
+            })
+        
         # Si le statut est ABSENT, on force heure_arrivee à None
         if data.get('statut') == 'ABSENT':
             data['heure_arrivee'] = None
+            print("Status is ABSENT, setting heure_arrivee to None")
+        
         # Si heure_arrivee est une chaîne vide, absente ou non conforme, on la met à None
         if not data.get('heure_arrivee') or data.get('heure_arrivee') in ['', None]:
             data['heure_arrivee'] = None
+            print("Setting heure_arrivee to None")
+        
+        print("Validated data:", data)
         return data
 
     def create(self, validated_data):

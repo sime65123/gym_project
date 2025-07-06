@@ -28,14 +28,21 @@ class AbonnementAdmin(admin.ModelAdmin):
     list_filter = ('actif',)
 
 class SeanceAdmin(admin.ModelAdmin):
-    list_display = ('client_nom', 'client_prenom', 'date_jour', 'nombre_heures', 'montant_paye')
-    search_fields = ('client_nom', 'client_prenom')
-    list_filter = ('date_jour',)
+    list_display = ('client_nom', 'client_prenom', 'date_jour', 'nombre_heures', 'montant_paye', 'coach')
+    search_fields = ('client_nom', 'client_prenom', 'coach')
+    list_filter = ('date_jour', 'coach')
 
 class ReservationAdmin(admin.ModelAdmin):
-    list_display = ('client', 'seance', 'date_reservation', 'statut', 'paye')
-    search_fields = ('client__nom', 'client__prenom', 'seance__titre')
-    list_filter = ('statut', 'paye', 'date_reservation')
+    list_display = ('nom_client', 'type_reservation', 'montant', 'statut')
+    search_fields = ('nom_client', 'description')
+    list_filter = ('type_reservation', 'statut')
+    fields = ('nom_client', 'type_reservation', 'montant', 'statut', 'description')
+    
+    def save_model(self, request, obj, form, change):
+        if not change:
+            # Logique à exécuter lors de la création d'une nouvelle réservation
+            pass
+        super().save_model(request, obj, form, change)
 
 class PaiementAdmin(admin.ModelAdmin):
     list_display = ('client', 'montant', 'date_paiement', 'status', 'mode_paiement')
