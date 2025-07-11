@@ -877,6 +877,7 @@ class ReservationViewSet(viewsets.ModelViewSet):
                     }, status=status.HTTP_200_OK)
             else:
                 # Pour les séances, validation immédiate
+                reservation.montant = float(montant)  # Correction : mettre à jour le montant de la séance
                 reservation.statut = 'CONFIRMEE'
                 reservation.save()
                 

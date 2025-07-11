@@ -68,7 +68,10 @@ def generer_facture_pdf(obj, paiement, type_ticket='SEANCE'):
         elements.append(Paragraph(f"<b>🎯 Type :</b> {type_reservation}", styleHighlight))
         
         # Afficher "À définir" pour les réservations de séance en attente
-        if type_reservation == 'SEANCE' and montant == 0:
+        if type_reservation == 'SEANCE' and montant == 0 and paiement and paiement.montant > 0:
+            # Si la séance a été validée et qu'un paiement existe, afficher le montant payé
+            elements.append(Paragraph(f"<b>💰 Montant :</b> {paiement.montant} FCFA", styleHighlight))
+        elif type_reservation == 'SEANCE' and montant == 0:
             elements.append(Paragraph(f"<b>💰 Montant :</b> À définir par l'employé", styleHighlight))
         else:
             elements.append(Paragraph(f"<b>💰 Montant :</b> {montant} FCFA", styleHighlight))
@@ -117,7 +120,9 @@ def generer_facture_pdf(obj, paiement, type_ticket='SEANCE'):
     montant_total = obj.montant if hasattr(obj, 'montant') else (paiement.montant if paiement else 0)
     
     # Afficher "À définir" pour les réservations de séance en attente
-    if hasattr(obj, 'type_reservation') and obj.type_reservation == 'SEANCE' and montant_total == 0:
+    if hasattr(obj, 'type_reservation') and obj.type_reservation == 'SEANCE' and montant_total == 0 and paiement and paiement.montant > 0:
+        elements.append(Paragraph(f"<b>💳 MONTANT À PAYER : {paiement.montant} FCFA</b>", styleAmount))
+    elif hasattr(obj, 'type_reservation') and obj.type_reservation == 'SEANCE' and montant_total == 0:
         elements.append(Paragraph(f"<b>💳 MONTANT À PAYER : À DÉFINIR</b>", styleAmount))
     else:
         elements.append(Paragraph(f"<b>💳 MONTANT À PAYER : {montant_total} FCFA</b>", styleAmount))
