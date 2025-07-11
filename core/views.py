@@ -1,6 +1,7 @@
 from uuid import uuid4
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal
 from django.db.models import Sum, Count, F
 from django.db.models.functions import TruncMonth
 from django.db import transaction
@@ -1303,24 +1304,61 @@ class ValiderReservationSeanceView(APIView):
             reservation = Reservation.objects.get(id=reservation_id, statut='EN_ATTENTE')
         except Reservation.DoesNotExist:
             return Response({'error': 'Réservation introuvable ou déjà validée'}, status=404)
+        
+        # Récupérer le montant depuis la requête ou utiliser celui de la séance
+        montant = request.data.get('montant')
+        if montant is not None:
+            try:
+                montant = float(montant)
+                if montant <= 0:
+                    return Response({'error': 'Le montant doit être supérieur à zéro'}, status=400)
+            except (ValueError, TypeError):
+                return Response({'error': 'Montant invalide'}, status=400)
+        else:
+            montant = reservation.seance.montant_paye or 0
+        
+        # Mettre à jour la réservation avec le montant payé et le montant total
         reservation.statut = 'CONFIRMEE'
-        reservation.paye = True
+        reservation.montant_paye = Decimal(str(montant))  # Convertir en Decimal pour la base de données
+        reservation.montant = Decimal(str(montant))  # Mettre à jour le montant total avec le montant payé
         reservation.save()
+        
+        # Créer le paiement
         paiement = Paiement.objects.create(
             client=reservation.client,
             seance=reservation.seance,
-            montant=reservation.seance.montant_paye or 0,
+            montant=Decimal(str(montant)),
             status='PAYE',
-            mode_paiement='ESPECE',
+            mode_paiement=request.data.get('mode_paiement', 'ESPECE'),
             reservation=reservation
         )
+        
+        # Rafraîchir l'objet pour s'assurer d'avoir les dernières données
+        reservation.refresh_from_db()
+        
+        # Générer le ticket PDF
         pdf_file = generer_facture_pdf(reservation.seance, paiement, type_ticket='SEANCE')
         ticket = Ticket.objects.create(
             paiement=paiement,
             fichier_pdf=pdf_file,
             type_ticket='SEANCE'
         )
-        return Response({'message': 'Réservation validée et facture générée.', 'ticket_id': ticket.id, 'ticket_pdf_url': ticket.fichier_pdf.url if ticket.fichier_pdf else None})
+        
+        # Sérializer la réservation mise à jour pour la réponse
+        from .serializers import ReservationSerializer
+        serializer = ReservationSerializer(reservation, context={'request': request})
+        
+        # Forcer la mise à jour des données dans la réponse
+        response_data = serializer.data
+        response_data['montant'] = str(reservation.montant)
+        response_data['montant_paye'] = str(reservation.montant_paye)
+        
+        return Response({
+            'message': 'Réservation validée et facture générée.',
+            'reservation': response_data,
+            'ticket_id': ticket.id, 
+            'ticket_pdf_url': ticket.fichier_pdf.url if ticket.fichier_pdf else None
+        })
 
 class ValiderReservationAbonnementView(APIView):
     permission_classes = [IsEmploye]

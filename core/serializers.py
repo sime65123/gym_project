@@ -138,11 +138,13 @@ class SeanceSerializer(serializers.ModelSerializer):
 class ReservationSerializer(serializers.ModelSerializer):
     ticket_url = serializers.SerializerMethodField()
     montant_total_paye = serializers.SerializerMethodField()
+    montant_paye = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    montant = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     
     class Meta:
         model = Reservation
         fields = [
-            'id', 'nom_client', 'type_reservation', 'montant', 'montant_total_paye', 'statut', 'description', 
+            'id', 'nom_client', 'type_reservation', 'montant', 'montant_paye', 'montant_total_paye', 'statut', 'description', 
             'created_at', 'updated_at', 'ticket_url'
         ]
         read_only_fields = ['id', 'statut', 'ticket_url', 'created_at', 'updated_at', 'montant_total_paye']
