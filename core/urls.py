@@ -41,5 +41,12 @@ urlpatterns = [
     path('abonnements-client/<int:ab_client_id>/valider/', ValiderReservationAbonnementView.as_view(), name='valider-reservation-abonnement'),
     path('abonnements-client/reserver/', AbonnementClientReservationView.as_view(), name='abonnement-client-reserver'),
     path('login/', LoginView.as_view(), name='login'),
+    from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('', views.api_root, name='api-root'),  # Affiche un message à /api/
+]
+
 ]
 
