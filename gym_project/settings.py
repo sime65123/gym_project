@@ -181,4 +181,9 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Ajout CORS pour le développement
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = [
+    "https://gymzon.netlify.app/",
+    "http://localhost:3000",  # Pour le développement local
+]
+
+CORS_ALLOW_CREDENTIALS = True  # Si vous utilisez des cookies/sessions
