@@ -847,6 +847,9 @@ class ReservationViewSet(viewsets.ModelViewSet):
                     
                     # Générer le ticket PDF
                     try:
+                        # Supprimer les anciens tickets liés à cette réservation
+                        from .models import Ticket
+                        Ticket.objects.filter(paiement__reservation=reservation).delete()
                         pdf_file = generer_facture_pdf(reservation, paiement, type_ticket=reservation.type_reservation)
                         ticket = Ticket.objects.create(
                             paiement=paiement,
@@ -884,6 +887,9 @@ class ReservationViewSet(viewsets.ModelViewSet):
                 
                 # Générer le ticket PDF
                 try:
+                    # Supprimer les anciens tickets liés à cette réservation
+                    from .models import Ticket
+                    Ticket.objects.filter(paiement__reservation=reservation).delete()
                     pdf_file = generer_facture_pdf(reservation, paiement, type_ticket=reservation.type_reservation)
                     ticket = Ticket.objects.create(
                         paiement=paiement,

@@ -151,8 +151,8 @@ class ReservationSerializer(serializers.ModelSerializer):
         
     def get_ticket_url(self, obj):
         try:
-            # Chercher le ticket associé à cette réservation via le paiement
-            paiement = Paiement.objects.filter(reservation=obj).first()
+            # Chercher le ticket du dernier paiement PAYE lié à cette réservation
+            paiement = Paiement.objects.filter(reservation=obj, status='PAYE').order_by('-date_paiement', '-id').first()
             if paiement and hasattr(paiement, 'ticket') and paiement.ticket:
                 request = self.context.get('request')
                 url = paiement.ticket.fichier_pdf.url
