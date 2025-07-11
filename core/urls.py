@@ -1,12 +1,15 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import FinancialReportView, ValiderPaiementView, PaiementDirectView, AbonnementDirectView, SeanceDirecteView, AbonnementClientDirectView, ValiderReservationSeanceView, ValiderReservationAbonnementView, AbonnementClientReservationView, LoginView
 from .views import (
+    FinancialReportView, ValiderPaiementView, PaiementDirectView, AbonnementDirectView,
+    SeanceDirecteView, AbonnementClientDirectView, ValiderReservationSeanceView,
+    ValiderReservationAbonnementView, AbonnementClientReservationView, LoginView,
     RegisterView, MeView,
     AbonnementViewSet, SeanceViewSet, ReservationViewSet,
     PaiementViewSet, TicketViewSet, ChargeViewSet, PresencePersonnelViewSet,
     UserListView, UserReservationsView, PersonnelViewSet,
-    AbonnementClientPresentielViewSet, PaiementTrancheViewSet, AbonnementClientViewSet
+    AbonnementClientPresentielViewSet, PaiementTrancheViewSet, AbonnementClientViewSet,
+    api_root  # je suppose que tu as cette vue simple dans core/views.py
 )
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -24,6 +27,7 @@ router.register(r'abonnements-clients-presentiels', AbonnementClientPresentielVi
 router.register(r'paiements-tranches', PaiementTrancheViewSet)
 
 urlpatterns = [
+    path('', api_root, name='api-root'),  # page racine API simple
     path('seances/direct/', SeanceDirecteView.as_view(), name='seance-directe'),
     path('', include(router.urls)),
     path('register/', RegisterView.as_view(), name='register'),
@@ -40,13 +44,5 @@ urlpatterns = [
     path('reservations/<int:reservation_id>/valider/', ValiderReservationSeanceView.as_view(), name='valider-reservation-seance'),
     path('abonnements-client/<int:ab_client_id>/valider/', ValiderReservationAbonnementView.as_view(), name='valider-reservation-abonnement'),
     path('abonnements-client/reserver/', AbonnementClientReservationView.as_view(), name='abonnement-client-reserver'),
-    path('login/', LoginView.as_view(), name='login'),
-    from django.urls import path
-from . import views
-
-urlpatterns = [
-    path('', views.api_root, name='api-root'),  # Affiche un message à /api/
+    path('login/custom/', LoginView.as_view(), name='login-custom'),
 ]
-
-]
-
