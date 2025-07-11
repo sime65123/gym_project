@@ -151,8 +151,7 @@ python-dotenv==1.1.0
 python-magic
 pyttsx3==2.90
 pytz==2024.1
-pywin32==306
-pywin32-ctypes==0.2.2
+
 PyYAML==6.0.1
 qrcode==7.4.2
 redis==5.2.1
