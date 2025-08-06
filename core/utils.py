@@ -9,6 +9,64 @@ from django.conf import settings
 import os
 from io import BytesIO
 import uuid
+from core.models import Paiement, Ticket
+from django.utils import timezone
+
+def enregistrer_paiement_et_valider_reservation(reservation, montant_paye, paiement=None, employe=None):
+    """
+    Enregistre un paiement, met à jour la réservation et génère le ticket si nécessaire.
+    - Pour une séance : paiement unique, validation immédiate.
+    - Pour un abonnement : cumul des paiements, validation à paiement complet.
+    Args:
+        reservation (Reservation): instance de Reservation
+        montant_paye (Decimal): montant payé à ajouter
+        paiement (Paiement, optional): instance à lier si déjà créée
+        employe (User, optional): employé ayant traité le paiement
+    Returns:
+        (Reservation, Ticket): la réservation mise à jour et le ticket généré (ou None)
+    """
+    # Mise à jour du montant payé
+    reservation.montant_paye += montant_paye
+    reservation.save()
+
+    # Création du paiement si besoin
+    if paiement is None:
+        paiement = Paiement.objects.create(
+            client=None,  # à adapter si besoin
+            reservation=reservation,
+            montant=montant_paye,
+            date_paiement=timezone.now(),
+            status='PAYE',
+            mode_paiement='ESPECE',  # à adapter selon le contexte
+        )
+
+    # Vérification de la validation
+    ticket = None
+    if reservation.type_reservation == 'SEANCE':
+        if reservation.montant_paye >= reservation.montant:
+            reservation.statut = 'CONFIRMEE'
+            reservation.save()
+            # Générer le ticket si pas déjà fait
+            if not Ticket.objects.filter(paiement=paiement).exists():
+                pdf_file = generer_facture_pdf(reservation, paiement, type_ticket='SEANCE')
+                ticket = Ticket.objects.create(
+                    paiement=paiement,
+                    fichier_pdf=pdf_file,
+                    type_ticket='SEANCE'
+                )
+    elif reservation.type_reservation == 'ABONNEMENT':
+        if reservation.montant_paye >= reservation.montant:
+            reservation.statut = 'CONFIRMEE'
+            reservation.save()
+            if not Ticket.objects.filter(paiement=paiement).exists():
+                pdf_file = generer_facture_pdf(reservation, paiement, type_ticket='ABONNEMENT')
+                ticket = Ticket.objects.create(
+                    paiement=paiement,
+                    fichier_pdf=pdf_file,
+                    type_ticket='ABONNEMENT'
+                )
+    return reservation, ticket
+
 
 def generer_facture_pdf(obj, paiement, type_ticket='SEANCE'):
     """
