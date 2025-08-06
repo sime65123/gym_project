@@ -1,12 +1,16 @@
+# core/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import FinancialReportView, ValiderPaiementView, PaiementDirectView, AbonnementDirectView, SeanceDirecteView, AbonnementClientDirectView, ValiderReservationSeanceView, ValiderReservationAbonnementView, AbonnementClientReservationView, LoginView
 from .views import (
+    FinancialReportView, ValiderPaiementView, PaiementDirectView, AbonnementDirectView,
+    SeanceDirecteView, AbonnementClientDirectView, ValiderReservationSeanceView,
+    ValiderReservationAbonnementView, AbonnementClientReservationView, LoginView,
     RegisterView, MeView,
     AbonnementViewSet, SeanceViewSet, ReservationViewSet,
     PaiementViewSet, TicketViewSet, ChargeViewSet, PresencePersonnelViewSet,
     UserListView, UserReservationsView, PersonnelViewSet,
-    AbonnementClientPresentielViewSet, PaiementTrancheViewSet, AbonnementClientViewSet
+    AbonnementClientPresentielViewSet, PaiementTrancheViewSet, AbonnementClientViewSet,
+    api_root
 )
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -24,10 +28,14 @@ router.register(r'abonnements-clients-presentiels', AbonnementClientPresentielVi
 router.register(r'paiements-tranches', PaiementTrancheViewSet)
 
 urlpatterns = [
+    # Racine de l'API
+    path('', api_root, name='api-root'),
+
+    # Endpoints manuels (prioritaires)
     path('seances/direct/', SeanceDirecteView.as_view(), name='seance-directe'),
-    path('', include(router.urls)),
     path('register/', RegisterView.as_view(), name='register'),
     path('login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('login/custom/', LoginView.as_view(), name='login-custom'),
     path('refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('me/', MeView.as_view(), name='me'),
     path('financial-report/', FinancialReportView.as_view(), name='financial-report'),
@@ -40,6 +48,7 @@ urlpatterns = [
     path('reservations/<int:reservation_id>/valider/', ValiderReservationSeanceView.as_view(), name='valider-reservation-seance'),
     path('abonnements-client/<int:ab_client_id>/valider/', ValiderReservationAbonnementView.as_view(), name='valider-reservation-abonnement'),
     path('abonnements-client/reserver/', AbonnementClientReservationView.as_view(), name='abonnement-client-reserver'),
-    path('login/', LoginView.as_view(), name='login'),
-]
 
+    # Endpoints auto générés par DRF
+    path('', include(router.urls)),
+]
